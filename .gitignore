@@ -1,0 +1,35 @@
+# IDE and editor directories
+.idea/
+.claude/
+.codex/
+*.iml
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*~
+
+# Environment files
+.env
+.env.local
+
+# direnv (user-specific)
+.envrc
+
+# test reports
+coverage.out
+.coverage
+*.lcov
+
+dist/
+build/
+
+# Symlinks to the contract
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+
+.worktrees/

@@ -1,0 +1,57 @@
+default_stages: [pre-commit]
+fail_fast: false
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+        stages: [pre-commit]
+      - id: check-merge-conflict
+        args: [--assume-in-merge]
+        stages: [pre-push]
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-json
+      - id: end-of-file-fixer
+        stages: [pre-commit]
+      - id: trailing-whitespace
+        stages: [pre-commit]
+
+  - repo: https://github.com/Lucas-C/pre-commit-hooks
+    rev: v1.5.5
+    hooks:
+      - id: forbid-crlf
+      - id: remove-crlf
+
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.10.0
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
+
+  - repo: local
+    hooks:
+      - id: go-fmt
+        name: go fmt (formatting)
+        entry: gofmt -w -l
+        language: system
+        files: \.go$
+
+      - id: go-vet
+        name: go vet (static analysis)
+        entry: go vet ./...
+        language: system
+        files: \.go$
+        pass_filenames: false
+
+      - id: go-mod-tidy
+        name: go mod tidy (dependency cleanup)
+        entry: go mod tidy
+        language: system
+        files: ^(go\.mod|go\.sum|.*\.go)$
+        pass_filenames: false
+
+  - repo: meta
+    hooks:
+      - id: check-useless-excludes
