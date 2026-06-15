@@ -5,28 +5,30 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/liza-mas/bash-policy/internal/bashpolicy"
+	"github.com/liza-mas/bash-policy/internal/embedded"
 )
 
-func updateClaudeBashPolicyActivation(projectRoot string, activation string) error {
+func updateClaudeBashPolicyActivation(projectRoot string, policyRoot string, hookCommand string, activation string, commandOverride bool) error {
 	settingsPath := filepath.Join(projectRoot, ".claude", "settings.json")
 	doc, err := readJSONObject(settingsPath)
 	if err != nil {
 		return err
 	}
-	command := `bash "$CLAUDE_PROJECT_DIR/.claude/hooks/bash-policy.sh" claude ` + activation
-	upsertHookCommand(doc, "PreToolUse", "Bash", "claude", activation, command, "Evaluating Bash command policy")
+	command := embedded.ProviderHookCommand(hookCommand, "claude", activation, policyRoot)
+	upsertHookCommand(doc, "PreToolUse", "Bash", "claude", activation, command, commandOverride, "Evaluating Bash command policy")
 	return writeJSONObject(settingsPath, doc)
 }
 
-func updateCodexBashPolicyActivation(projectRoot string, activation string) error {
+func updateCodexBashPolicyActivation(projectRoot string, policyRoot string, hookCommand string, activation string, commandOverride bool) error {
 	hooksPath := filepath.Join(projectRoot, ".codex", "hooks.json")
 	doc, err := readJSONObject(hooksPath)
 	if err != nil {
 		return err
 	}
-	command := `root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0; hook="$root/.codex/hooks/bash-policy.sh"; [ -x "$hook" ] || { echo "Missing Liza Codex hook: $hook. Run 'liza init --codex' to repair project hooks, or remove .codex/hooks.json to disable them." >&2; exit 1; }; bash "$hook" codex ` + activation
-	upsertHookCommand(doc, "PreToolUse", "^Bash$", "codex", activation, command, "Evaluating Bash command policy")
+	command := embedded.ProviderHookCommand(hookCommand, "codex", activation, policyRoot)
+	upsertHookCommand(doc, "PreToolUse", "^Bash$", "codex", activation, command, commandOverride, "Evaluating Bash command policy")
 	return writeJSONObject(hooksPath, doc)
 }
 
@@ -56,8 +58,8 @@ func writeJSONObject(path string, doc map[string]any) error {
 	return os.WriteFile(path, append(content, '\n'), 0o644)
 }
 
-func upsertHookCommand(doc map[string]any, event string, matcher string, provider string, activation string, command string, statusMessage string) {
-	if replaceExistingHookActivation(doc, provider, activation) {
+func upsertHookCommand(doc map[string]any, event string, matcher string, provider string, activation string, command string, commandOverride bool, statusMessage string) {
+	if replaceExistingHookActivation(doc, provider, activation, command, commandOverride) {
 		return
 	}
 	hooks, _ := doc["hooks"].(map[string]any)
@@ -79,14 +81,18 @@ func upsertHookCommand(doc map[string]any, event string, matcher string, provide
 	hooks[event] = entries
 }
 
-func replaceExistingHookActivation(value any, provider string, activation string) bool {
+func replaceExistingHookActivation(value any, provider string, activation string, command string, commandOverride bool) bool {
 	replaced := false
 	var walk func(any)
 	walk = func(current any) {
 		switch typed := current.(type) {
 		case map[string]any:
 			if raw, ok := typed["command"].(string); ok && isBashPolicyProviderCommand(raw, provider) {
-				typed["command"] = replaceProviderActivation(raw, provider, activation)
+				if commandOverride {
+					typed["command"] = command
+				} else {
+					typed["command"] = replaceProviderActivation(raw, provider, activation)
+				}
 				replaced = true
 			}
 			for _, child := range typed {
@@ -103,18 +109,17 @@ func replaceExistingHookActivation(value any, provider string, activation string
 }
 
 func isBashPolicyProviderCommand(command string, provider string) bool {
-	return strings.Contains(command, "bash-policy.sh") && strings.Contains(command, " "+provider)
+	info, ok := bashpolicy.ParseHookCommand(command)
+	return ok && info.Provider == provider
 }
 
 func replaceProviderActivation(command string, provider string, activation string) string {
-	for _, old := range []string{"audit", "allow", "dry-run", "on", "off"} {
-		needle := " " + provider + " " + old
-		if strings.Contains(command, needle) {
-			return strings.Replace(command, needle, " "+provider+" "+activation, 1)
-		}
+	info, ok := bashpolicy.ParseHookCommand(command)
+	if !ok || info.Provider != provider {
+		return command
 	}
-	if strings.HasSuffix(command, " "+provider) {
-		return command + " " + activation
+	if rewritten, ok := bashpolicy.RewriteHookCommandActivation(command, activation); ok {
+		return rewritten
 	}
 	return command
 }

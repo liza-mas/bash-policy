@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/liza-mas/liza/internal/bashpolicy"
+	"github.com/liza-mas/bash-policy/internal/bashpolicy"
 )
 
 func TestBashPolicyEvaluateCommandJSON(t *testing.T) {
@@ -18,10 +18,11 @@ func TestBashPolicyEvaluateCommandJSON(t *testing.T) {
 
 	var output bytes.Buffer
 	err := BashPolicyEvaluateCommand(strings.NewReader(payload), &output, BashPolicyEvaluateOptions{
-		Provider:  "claude",
-		Mode:      "dry-run",
-		SafeRoots: []string{root},
-		JSON:      true,
+		Provider:           "claude",
+		Mode:               "dry-run",
+		PolicyArtifactRoot: root,
+		SafeRoots:          []string{root},
+		JSON:               true,
 	})
 	if err != nil {
 		t.Fatalf("BashPolicyEvaluateCommand failed: %v", err)
@@ -115,6 +116,33 @@ func TestBashPolicyEvaluateCommandDoesNotAllowUnsafeOrDryRunCommands(t *testing.
 				t.Fatalf("events = %+v, want none", events)
 			}
 		})
+	}
+}
+
+func TestBashPolicyEvaluateCommandFailsClosedWithoutPolicyRootInDryRun(t *testing.T) {
+	t.Setenv("BASH_POLICY_ARTIFACT_ROOT", "")
+	root := t.TempDir()
+	var output bytes.Buffer
+	var diagnostics bytes.Buffer
+
+	err := BashPolicyEvaluateCommand(strings.NewReader(`{"command":"git status --short"}`), &output, BashPolicyEvaluateOptions{
+		Provider:    "claude",
+		Mode:        "dry-run",
+		SafeRoots:   []string{root},
+		Diagnostics: &diagnostics,
+	})
+
+	if err != nil {
+		t.Fatalf("BashPolicyEvaluateCommand failed: %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("output = %q, want empty no-op", output.String())
+	}
+	if !strings.Contains(diagnostics.String(), "bash policy disabled: policy-artifact-root is required") {
+		t.Fatalf("diagnostics = %q, want disabled diagnostic", diagnostics.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, bashpolicy.DryRunLogFileName)); !os.IsNotExist(err) {
+		t.Fatalf("dry-run log should not be written without policy root, stat err: %v", err)
 	}
 }
 
@@ -240,7 +268,7 @@ func TestBashPolicyExportCommandWritesFilteredCandidatesAndIgnores(t *testing.T)
 	}
 
 	var output bytes.Buffer
-	if err := BashPolicyExportCommand(strings.NewReader(""), &output, BashPolicyExportOptions{
+	if err := BashPolicyExportCommand(&output, BashPolicyExportOptions{
 		Provider:           "claude",
 		PolicyArtifactRoot: policyRoot,
 		ClaudeSettings:     settingsPath,
@@ -301,9 +329,11 @@ func TestBashPolicyActivationCommandUpdatesProviderHooks(t *testing.T) {
 	if err := BashPolicyActivationCommand(&output, projectRoot, BashPolicyActivationOptions{
 		Provider:   "all",
 		Activation: "off",
+		Command:    "/usr/local/bin/bash-policy",
 	}); err != nil {
 		t.Fatalf("BashPolicyActivationCommand failed: %v", err)
 	}
+
 	for _, path := range []string{claudeSettings, codexHooks} {
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -313,12 +343,124 @@ func TestBashPolicyActivationCommandUpdatesProviderHooks(t *testing.T) {
 		if strings.Contains(text, "dry-run") {
 			t.Fatalf("%s still contains dry-run activation:\n%s", path, text)
 		}
-		if path == claudeSettings && !strings.Contains(text, " claude off") {
-			t.Fatalf("Claude settings missing off activation:\n%s", text)
+		if path == claudeSettings && (!strings.Contains(text, "bash-policy.sh") || !strings.Contains(text, "claude off")) {
+			t.Fatalf("Claude settings did not preserve wrapper command with off activation:\n%s", text)
 		}
-		if path == codexHooks && !strings.Contains(text, " codex off") {
-			t.Fatalf("Codex hooks missing off activation:\n%s", text)
+		if path == codexHooks && (!strings.Contains(text, "bash-policy.sh") || !strings.Contains(text, "codex off")) {
+			t.Fatalf("Codex hooks did not preserve wrapper command with off activation:\n%s", text)
 		}
+	}
+}
+
+func TestBashPolicyActivationCommandPreservesRenamedEvaluateCommand(t *testing.T) {
+	projectRoot := t.TempDir()
+	initGitRepo(t, projectRoot)
+	claudeSettings := filepath.Join(projectRoot, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(claudeSettings), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claudeSettings, []byte(`{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"/opt/wrapper evaluate --provider claude --mode dry-run --policy-artifact-root /old --safe-root \"$CLAUDE_PROJECT_DIR\""}]}]}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := BashPolicyActivationCommand(&output, projectRoot, BashPolicyActivationOptions{
+		Provider:   "claude",
+		Activation: "off",
+		Command:    "/usr/local/bin/bash-policy",
+	}); err != nil {
+		t.Fatalf("BashPolicyActivationCommand failed: %v", err)
+	}
+	content, err := os.ReadFile(claudeSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	for _, want := range []string{"/opt/wrapper evaluate", "--provider claude", "--mode off", "--policy-artifact-root /old"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("settings missing preserved command fragment %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "/usr/local/bin/bash-policy evaluate") {
+		t.Fatalf("activation should preserve existing command unless command override is explicit:\n%s", text)
+	}
+}
+
+func TestBashPolicyActivationCommandOverrideRewritesExistingCommand(t *testing.T) {
+	projectRoot := t.TempDir()
+	initGitRepo(t, projectRoot)
+	claudeSettings := filepath.Join(projectRoot, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(claudeSettings), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claudeSettings, []byte(`{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"/opt/wrapper evaluate --provider claude --mode dry-run --policy-artifact-root /old --safe-root \"$CLAUDE_PROJECT_DIR\""}]}]}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := BashPolicyActivationCommand(&output, projectRoot, BashPolicyActivationOptions{
+		Provider:        "claude",
+		Activation:      "on",
+		Command:         "/usr/local/bin/bash-policy",
+		CommandOverride: true,
+	}); err != nil {
+		t.Fatalf("BashPolicyActivationCommand failed: %v", err)
+	}
+	content, err := os.ReadFile(claudeSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	for _, want := range []string{"/usr/local/bin/bash-policy evaluate", "--provider claude", "--mode on", "--policy-artifact-root", "--safe-root"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("settings missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "/opt/wrapper") {
+		t.Fatalf("override should replace existing wrapper command:\n%s", text)
+	}
+}
+
+func TestBashPolicyActivationCommandPreservesUnrelatedEvaluateProviderHook(t *testing.T) {
+	projectRoot := t.TempDir()
+	initGitRepo(t, projectRoot)
+	claudeSettings := filepath.Join(projectRoot, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(claudeSettings), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claudeSettings, []byte(`{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"/opt/tool evaluate --provider claude --mode dry-run"}]}]}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := BashPolicyActivationCommand(&output, projectRoot, BashPolicyActivationOptions{
+		Provider:   "claude",
+		Activation: "off",
+		Command:    "/usr/local/bin/bash-policy",
+	}); err != nil {
+		t.Fatalf("BashPolicyActivationCommand failed: %v", err)
+	}
+	content, err := os.ReadFile(claudeSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	if !strings.Contains(text, "/opt/tool evaluate --provider claude --mode dry-run") {
+		t.Fatalf("unrelated provider hook should remain unchanged:\n%s", text)
+	}
+	for _, want := range []string{"/usr/local/bin/bash-policy evaluate", "--provider claude", "--mode off", "--policy-artifact-root", "--safe-root"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("settings missing managed hook fragment %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestBashPolicyProviderCommandRejectsGenericEvaluateProviderHook(t *testing.T) {
+	if isBashPolicyProviderCommand("/opt/wrapper evaluate --provider claude --mode dry-run", "claude") {
+		t.Fatal("renamed evaluate command without artifact and safe roots should not be treated as a bash-policy hook")
+	}
+	if !isBashPolicyProviderCommand(`/opt/wrapper evaluate --provider claude --mode dry-run --policy-artifact-root /project --safe-root "$CLAUDE_PROJECT_DIR"`, "claude") {
+		t.Fatal("renamed evaluate command with full standalone shape should be treated as a bash-policy hook")
 	}
 }
 
@@ -330,6 +472,7 @@ func TestBashPolicyActivationCommandRejectsUnknownProvider(t *testing.T) {
 	err := BashPolicyActivationCommand(&output, projectRoot, BashPolicyActivationOptions{
 		Provider:   "unknown",
 		Activation: "dry-run",
+		Command:    "/usr/local/bin/bash-policy",
 	})
 	if err == nil {
 		t.Fatal("expected unknown provider to fail")

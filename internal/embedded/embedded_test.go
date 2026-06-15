@@ -2,11 +2,11 @@ package embedded
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -14,7 +14,7 @@ import (
 func TestWriteClaudeSettingsInstallsOnlyBashPolicyAssets(t *testing.T) {
 	projectRoot := t.TempDir()
 
-	if err := WriteClaudeSettings(projectRoot, bufio.NewReader(strings.NewReader(""))); err != nil {
+	if err := WriteClaudeSettings(projectRoot, projectRoot, "/usr/local/bin/bash-policy", bufio.NewReader(strings.NewReader(""))); err != nil {
 		t.Fatalf("WriteClaudeSettings failed: %v", err)
 	}
 
@@ -27,7 +27,6 @@ func TestWriteClaudeSettingsInstallsOnlyBashPolicyAssets(t *testing.T) {
 		t.Fatalf("settings JSON is invalid: %v\n%s", err, string(settingsContent))
 	}
 	assertOnlyBashPolicyCommands(t, settings)
-	assertHookScripts(t, filepath.Join(projectRoot, ".claude", "hooks"))
 }
 
 func TestWriteClaudeSettingsMergesExistingHookActivation(t *testing.T) {
@@ -41,7 +40,7 @@ func TestWriteClaudeSettingsMergesExistingHookActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteClaudeSettings(projectRoot, bufio.NewReader(strings.NewReader("y\n"))); err != nil {
+	if err := WriteClaudeSettings(projectRoot, projectRoot, "/usr/local/bin/bash-policy", bufio.NewReader(strings.NewReader("y\n"))); err != nil {
 		t.Fatalf("WriteClaudeSettings failed: %v", err)
 	}
 
@@ -50,10 +49,13 @@ func TestWriteClaudeSettingsMergesExistingHookActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(content)
-	if !strings.Contains(text, " claude off") {
+	if !strings.Contains(text, "--mode off") {
 		t.Fatalf("existing activation was not preserved:\n%s", text)
 	}
-	if strings.Count(text, "bash-policy.sh") != 1 {
+	if strings.Contains(text, "bash-policy.sh") {
+		t.Fatalf("legacy wrapper hook was not migrated:\n%s", text)
+	}
+	if strings.Count(text, "bash-policy evaluate") != 1 {
 		t.Fatalf("bash-policy hook should not be duplicated:\n%s", text)
 	}
 }
@@ -62,35 +64,29 @@ func TestWriteClaudeSettingsExcludesBashPolicyArtifacts(t *testing.T) {
 	projectRoot := t.TempDir()
 	initGitRepoForEmbeddedTest(t, projectRoot)
 
-	if err := WriteClaudeSettings(projectRoot, bufio.NewReader(strings.NewReader(""))); err != nil {
+	if err := WriteClaudeSettings(projectRoot, projectRoot, "/usr/local/bin/bash-policy", bufio.NewReader(strings.NewReader(""))); err != nil {
 		t.Fatalf("WriteClaudeSettings failed: %v", err)
 	}
 
 	assertBashPolicyArtifactsExcluded(t, projectRoot)
 }
 
-func TestWriteHooksOverwritesOnlyBashPolicyHook(t *testing.T) {
+func TestWriteClaudeSettingsExcludesArtifactsAtPolicyRoot(t *testing.T) {
 	projectRoot := t.TempDir()
-	hooksDir := filepath.Join(projectRoot, ".claude", "hooks")
-	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(hooksDir, "bash-policy.sh"), []byte("old"), 0o755); err != nil {
-		t.Fatal(err)
+	policyRoot := t.TempDir()
+	initGitRepoForEmbeddedTest(t, policyRoot)
+
+	if err := WriteClaudeSettings(projectRoot, policyRoot, "/usr/local/bin/bash-policy", bufio.NewReader(strings.NewReader(""))); err != nil {
+		t.Fatalf("WriteClaudeSettings failed: %v", err)
 	}
 
-	if err := WriteHooks(projectRoot); err != nil {
-		t.Fatalf("WriteHooks failed: %v", err)
-	}
-
-	assertHookScripts(t, hooksDir)
-	assertOnlyHookNames(t, hooksDir, "bash-policy.sh")
+	assertBashPolicyArtifactsExcluded(t, policyRoot)
 }
 
 func TestWriteCodexProjectHooksInstallsOnlyBashPolicyAssets(t *testing.T) {
 	projectRoot := t.TempDir()
 
-	if err := WriteCodexProjectHooks(projectRoot, bufio.NewReader(strings.NewReader(""))); err != nil {
+	if err := WriteCodexProjectHooks(projectRoot, projectRoot, "/usr/local/bin/bash-policy", bufio.NewReader(strings.NewReader(""))); err != nil {
 		t.Fatalf("WriteCodexProjectHooks failed: %v", err)
 	}
 
@@ -111,11 +107,10 @@ func TestWriteCodexProjectHooksInstallsOnlyBashPolicyAssets(t *testing.T) {
 		t.Fatalf("hooks JSON is invalid: %v\n%s", err, string(hooksContent))
 	}
 	text := string(hooksContent)
-	if !strings.Contains(text, ".codex/hooks/bash-policy.sh") || !strings.Contains(text, `"matcher": "^Bash$"`) {
+	if !strings.Contains(text, "bash-policy evaluate") || !strings.Contains(text, `"matcher": "^Bash$"`) {
 		t.Fatalf("hooks JSON missing bash-policy hook:\n%s", text)
 	}
 	assertOnlyBashPolicyCommands(t, hooks)
-	assertHookScripts(t, filepath.Join(projectRoot, ".codex", "hooks"))
 }
 
 func TestWriteCodexProjectHooksMergesExistingFiles(t *testing.T) {
@@ -132,7 +127,7 @@ func TestWriteCodexProjectHooksMergesExistingFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteCodexProjectHooks(projectRoot, bufio.NewReader(strings.NewReader("y\ny\n"))); err != nil {
+	if err := WriteCodexProjectHooks(projectRoot, projectRoot, "/usr/local/bin/bash-policy", bufio.NewReader(strings.NewReader("y\ny\n"))); err != nil {
 		t.Fatalf("WriteCodexProjectHooks failed: %v", err)
 	}
 
@@ -151,7 +146,7 @@ func TestWriteCodexProjectHooksMergesExistingFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(hooksContent)
-	for _, want := range []string{"echo done", ".codex/hooks/bash-policy.sh"} {
+	for _, want := range []string{"echo done", "bash-policy evaluate"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("hooks JSON missing %q:\n%s", want, text)
 		}
@@ -169,7 +164,7 @@ func TestWriteCodexProjectHooksDeclineLeavesFilesUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteCodexProjectHooks(projectRoot, bufio.NewReader(strings.NewReader("n\n"))); err != nil {
+	if err := WriteCodexProjectHooks(projectRoot, projectRoot, "/usr/local/bin/bash-policy", bufio.NewReader(strings.NewReader("n\n"))); err != nil {
 		t.Fatalf("WriteCodexProjectHooks failed: %v", err)
 	}
 
@@ -189,35 +184,17 @@ func TestWriteCodexProjectHooksExcludesBashPolicyArtifacts(t *testing.T) {
 	projectRoot := t.TempDir()
 	initGitRepoForEmbeddedTest(t, projectRoot)
 
-	if err := WriteCodexProjectHooks(projectRoot, bufio.NewReader(strings.NewReader(""))); err != nil {
+	if err := WriteCodexProjectHooks(projectRoot, projectRoot, "/usr/local/bin/bash-policy", bufio.NewReader(strings.NewReader(""))); err != nil {
 		t.Fatalf("WriteCodexProjectHooks failed: %v", err)
 	}
 
 	assertBashPolicyArtifactsExcluded(t, projectRoot)
 }
 
-func TestWriteCodexHooksOverwritesOnlyBashPolicyHook(t *testing.T) {
-	projectRoot := t.TempDir()
-	hooksDir := filepath.Join(projectRoot, ".codex", "hooks")
-	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(hooksDir, "bash-policy.sh"), []byte("old"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := WriteCodexHooks(projectRoot); err != nil {
-		t.Fatalf("WriteCodexHooks failed: %v", err)
-	}
-
-	assertHookScripts(t, hooksDir)
-	assertOnlyHookNames(t, hooksDir, "bash-policy.sh")
-}
-
 func TestMergeSettingsDeduplicatesBashPolicyHookActivation(t *testing.T) {
 	managed := map[string]any{
 		"hooks": map[string]any{
-			"PreToolUse": []any{hookEntry(`bash "$CLAUDE_PROJECT_DIR/.claude/hooks/bash-policy.sh" claude dry-run`)},
+			"PreToolUse": []any{hookEntry(`/usr/local/bin/bash-policy evaluate --provider claude --mode dry-run --policy-artifact-root /project --safe-root "$CLAUDE_PROJECT_DIR"`)},
 		},
 	}
 	existing := map[string]any{
@@ -231,8 +208,54 @@ func TestMergeSettingsDeduplicatesBashPolicyHookActivation(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d, want 1: %+v", len(entries), entries)
 	}
-	if got := hookCommands(entries[0])[0]; !strings.Contains(got, " claude on") {
+	if got := hookCommands(entries[0])[0]; !strings.Contains(got, "--mode on") || strings.Contains(got, "bash-policy.sh") {
 		t.Fatalf("existing activation should win, got %q", got)
+	}
+}
+
+func TestMergeSettingsDeduplicatesRenamedBashPolicyCommand(t *testing.T) {
+	managed := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{hookEntry(`/usr/local/bin/bash-policy evaluate --provider claude --mode dry-run --policy-artifact-root /project --safe-root "$CLAUDE_PROJECT_DIR"`)},
+		},
+	}
+	existing := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{hookEntry(`/opt/wrapper evaluate --provider claude --mode on --policy-artifact-root /project --safe-root "$CLAUDE_PROJECT_DIR"`)},
+		},
+	}
+
+	merged := mergeSettings(managed, existing)
+	entries := merged["hooks"].(map[string]any)["PreToolUse"].([]any)
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1: %+v", len(entries), entries)
+	}
+	got := hookCommands(entries[0])[0]
+	if !strings.Contains(got, "bash-policy evaluate") || !strings.Contains(got, "--mode on") || strings.Contains(got, "/opt/wrapper") {
+		t.Fatalf("managed command should be deduplicated with existing renamed activation, got %q", got)
+	}
+}
+
+func TestMergeSettingsPreservesUnrelatedEvaluateProviderHook(t *testing.T) {
+	managed := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{hookEntry(`/usr/local/bin/bash-policy evaluate --provider claude --mode dry-run --policy-artifact-root /project --safe-root "$CLAUDE_PROJECT_DIR"`)},
+		},
+	}
+	existing := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{hookEntry(`/opt/tool evaluate --provider claude --mode on`)},
+		},
+	}
+
+	merged := mergeSettings(managed, existing)
+	entries := merged["hooks"].(map[string]any)["PreToolUse"].([]any)
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want managed and unrelated hooks: %+v", len(entries), entries)
+	}
+	commands := append(hookCommands(entries[0]), hookCommands(entries[1])...)
+	if !slices.Contains(commands, `/opt/tool evaluate --provider claude --mode on`) {
+		t.Fatalf("unrelated provider hook missing after merge: %+v", commands)
 	}
 }
 
@@ -247,47 +270,6 @@ func hookEntry(command string) map[string]any {
 	}
 }
 
-func assertHookScripts(t *testing.T, hooksDir string) {
-	t.Helper()
-	for name, wantContent := range hookScriptContents() {
-		hookPath := filepath.Join(hooksDir, name)
-		info, err := os.Stat(hookPath)
-		if err != nil {
-			t.Fatalf("hook file %s not found: %v", name, err)
-		}
-		if info.Mode()&0o111 == 0 {
-			t.Fatalf("hook file %s is not executable: %v", name, info.Mode())
-		}
-		content, err := os.ReadFile(hookPath)
-		if err != nil {
-			t.Fatalf("failed to read hook %s: %v", name, err)
-		}
-		if !bytes.Equal(content, wantContent) {
-			t.Fatalf("hook %s content does not match embedded source", name)
-		}
-	}
-}
-
-func assertOnlyHookNames(t *testing.T, hooksDir string, names ...string) {
-	t.Helper()
-	entries, err := os.ReadDir(hooksDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := make(map[string]bool)
-	for _, name := range names {
-		want[name] = true
-	}
-	if len(entries) != len(want) {
-		t.Fatalf("hook count = %d, want %d", len(entries), len(want))
-	}
-	for _, entry := range entries {
-		if !want[entry.Name()] {
-			t.Fatalf("unexpected hook file %q", entry.Name())
-		}
-	}
-}
-
 func assertOnlyBashPolicyCommands(t *testing.T, value any) {
 	t.Helper()
 	commands := collectHookCommands(value)
@@ -295,7 +277,12 @@ func assertOnlyBashPolicyCommands(t *testing.T, value any) {
 		t.Fatal("no hook commands found")
 	}
 	for _, command := range commands {
-		if !strings.Contains(command, "bash-policy.sh") {
+		for _, want := range []string{"bash-policy evaluate", "--policy-artifact-root", "--safe-root"} {
+			if !strings.Contains(command, want) {
+				t.Fatalf("bash-policy hook command missing %q: %s", want, command)
+			}
+		}
+		if strings.Contains(command, "bash-policy.sh") {
 			t.Fatalf("unexpected non-bash-policy hook command: %s", command)
 		}
 	}

@@ -10,9 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/liza-mas/liza/internal/filelock"
-	"github.com/liza-mas/liza/internal/gitenv"
-	"github.com/liza-mas/liza/internal/paths"
+	"github.com/liza-mas/bash-policy/internal/filelock"
+	"github.com/liza-mas/bash-policy/internal/gitenv"
 	"gopkg.in/yaml.v3"
 )
 
@@ -74,20 +73,44 @@ func NormalizeActivation(value string) (string, error) {
 	}
 }
 
-func ResolvePolicyArtifactRoot(explicit string, safeRoots []string) (string, error) {
+func ResolveRequiredPolicyArtifactRoot(explicit string) (string, error) {
 	if strings.TrimSpace(explicit) != "" {
 		return canonicalArtifactRoot(explicit)
 	}
-	for _, root := range safeRoots {
-		if strings.TrimSpace(root) == "" {
-			continue
-		}
-		resolved, err := paths.GetProjectRootFromDir(root)
-		if err == nil {
-			return canonicalArtifactRoot(resolved)
-		}
+	if envRoot := strings.TrimSpace(os.Getenv("BASH_POLICY_ARTIFACT_ROOT")); envRoot != "" {
+		return canonicalArtifactRoot(envRoot)
 	}
-	return "", fmt.Errorf("policy-artifact-root is required when it cannot be resolved from safe-root git metadata")
+	return "", fmt.Errorf("policy-artifact-root is required")
+}
+
+func ResolveInteractivePolicyArtifactRoot(explicit string) (string, error) {
+	if root, err := ResolveRequiredPolicyArtifactRoot(explicit); err == nil {
+		return root, nil
+	}
+	root, err := discoverPolicyArtifactRootFromCWD()
+	if err != nil {
+		return "", fmt.Errorf("policy-artifact-root is required when %s cannot be discovered upward: %w", PolicyFileName, err)
+	}
+	return root, nil
+}
+
+func discoverPolicyArtifactRootFromCWD() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working directory: %w", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, PolicyFileName)); err == nil {
+			return canonicalArtifactRoot(dir)
+		} else if err != nil && !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", os.ErrNotExist
+		}
+		dir = parent
+	}
 }
 
 func canonicalArtifactRoot(root string) (string, error) {
@@ -350,6 +373,7 @@ func ResultsFromEvents(events []Event) []Result {
 
 func BuildCandidates(provider string, permissions []string, policy *Policy, events []Event, safeRoots ...string) CandidateFile {
 	seen := map[string]Candidate{}
+	requestedProvider := strings.ToLower(strings.TrimSpace(provider))
 	for _, permission := range permissions {
 		identity := NormalizePermissionFamily(permission)
 		if identity == "" || BuiltInCoversPermissionFamily(identity) || policy.PermissionFamilyResolved(identity) {
@@ -364,6 +388,9 @@ func BuildCandidates(provider string, permissions []string, policy *Policy, even
 		}
 	}
 	for _, event := range events {
+		if requestedProvider != "" && strings.ToLower(strings.TrimSpace(event.Provider)) != requestedProvider {
+			continue
+		}
 		if event.Decision == DecisionAllow {
 			continue
 		}
@@ -738,11 +765,6 @@ func unixShapeCoveredByBuiltIn(command string, args []string) bool {
 	if !ok {
 		return false
 	}
-	for _, arg := range args {
-		if strings.Contains(arg, "<redacted>") {
-			return false
-		}
-	}
 	operands, parseResult := parseReadOnlyUnixArgs(args, profile, append([]string{command}, args...))
 	if parseResult.Decision != "" {
 		return false
@@ -763,7 +785,7 @@ func unixShapeCoveredByBuiltIn(command string, args []string) bool {
 			}
 			continue
 		}
-		if !shapePlainOperandCovered(operand) {
+		if !shapePlainOperandCovered(operand, profile) {
 			return false
 		}
 	}
@@ -787,8 +809,20 @@ func shapePathOperandCovered(operand string) bool {
 	return true
 }
 
-func shapePlainOperandCovered(operand string) bool {
-	if operand == "" || operand == "<redacted>" || LooksSensitive(operand) {
+func shapePlainOperandCovered(operand string, profile readOnlyUnixProfile) bool {
+	if operand == "" {
+		return false
+	}
+	if operand == "<safe-path>" {
+		return profile.freeFormOperands
+	}
+	if strings.Contains(operand, "<redacted>") {
+		return profile.freeFormOperands && !LooksSensitive(operand)
+	}
+	if LooksSensitive(operand) {
+		return false
+	}
+	if isCommandShapePlaceholder(operand) {
 		return false
 	}
 	if argLooksPathLike(operand) {

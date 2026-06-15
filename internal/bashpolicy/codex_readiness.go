@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -64,18 +65,10 @@ func AssessCodexReadiness(projectRoot string) CodexReadiness {
 			add("bash_policy_activation", true, "Codex Bash policy activation is explicitly off")
 			return readiness
 		}
-		add("expected_hooks_wired", codexHooksJSONHasExpectedCommands(hooksContent), "hooks.json must wire session-context, enforce-init, git-guard, rtk-guard, bash-policy, and worktree-path-guard")
+		add("bash_policy_hook_wired", codexHooksJSONHasExpectedCommands(hooksContent), "hooks.json must wire bash-policy evaluate with explicit provider, activation, policy-artifact-root, and safe-root")
 	}
 
-	hooksDir := filepath.Join(codexDir, "hooks")
-	for _, name := range []string{"enforce-init.sh", "session-context.sh", "git-guard.sh", "rtk-guard.sh", "bash-policy.sh", "worktree-path-guard.sh"} {
-		path := filepath.Join(hooksDir, name)
-		info, err := os.Stat(path)
-		ok := err == nil && !info.IsDir() && info.Mode()&0111 != 0
-		add("hook_file_"+name, ok, name+" must exist and be executable")
-	}
-
-	add("blocking_contract_verified", false, "Codex hook blocking semantics are not verified by Liza yet; status remains log-only/degraded")
+	add("blocking_contract_verified", false, "Codex hook blocking semantics are not verified yet; status remains log-only/degraded")
 
 	allInstallChecksOK := true
 	for _, check := range readiness.Checks {
@@ -129,13 +122,12 @@ func codexHooksJSONHasExpectedCommands(content []byte) bool {
 	if err := json.Unmarshal(content, &doc); err != nil {
 		return false
 	}
-	text := string(content)
-	for _, want := range []string{"session-context.sh", "enforce-init.sh", "git-guard.sh", "rtk-guard.sh", "bash-policy.sh", "worktree-path-guard.sh"} {
-		if !strings.Contains(text, want) {
-			return false
+	for _, command := range preToolUseHookCommands(doc) {
+		if info, ok := ParseHookCommand(command); ok && info.Provider == "codex" && !info.Legacy {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func codexHooksJSONHasBashPolicyOff(content []byte) bool {
@@ -147,23 +139,62 @@ func codexHooksJSONHasBashPolicyOff(content []byte) bool {
 }
 
 func valueContainsBashPolicyOff(value any) bool {
-	switch typed := value.(type) {
-	case map[string]any:
-		if command, ok := typed["command"].(string); ok {
-			return strings.Contains(command, "bash-policy.sh") &&
-				strings.Contains(command, " codex off")
-		}
-		for _, child := range typed {
-			if valueContainsBashPolicyOff(child) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range typed {
-			if valueContainsBashPolicyOff(child) {
-				return true
-			}
+	for _, command := range preToolUseHookCommands(value) {
+		if info, ok := ParseHookCommand(command); ok && info.Provider == "codex" && info.Activation == ActivationOff {
+			return true
 		}
 	}
 	return false
+}
+
+func preToolUseHookCommands(value any) []string {
+	doc, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	hooks, ok := doc["hooks"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	preToolUse, ok := hooks["PreToolUse"].([]any)
+	if !ok {
+		return nil
+	}
+	var commands []string
+	for _, entry := range preToolUse {
+		entryMap, ok := entry.(map[string]any)
+		if !ok || !preToolUseEntryMatchesBash(entryMap) {
+			continue
+		}
+		hookList, ok := entryMap["hooks"].([]any)
+		if !ok {
+			continue
+		}
+		for _, hook := range hookList {
+			hookMap, ok := hook.(map[string]any)
+			if !ok {
+				continue
+			}
+			if command, ok := hookMap["command"].(string); ok {
+				commands = append(commands, command)
+			}
+		}
+	}
+	return commands
+}
+
+func preToolUseEntryMatchesBash(entry map[string]any) bool {
+	matcher, ok := entry["matcher"].(string)
+	if !ok || strings.TrimSpace(matcher) == "" {
+		return true
+	}
+	matcher = strings.TrimSpace(matcher)
+	if matcher == "*" {
+		return true
+	}
+	re, err := regexp.Compile(matcher)
+	if err != nil {
+		return false
+	}
+	return re.MatchString("Bash")
 }

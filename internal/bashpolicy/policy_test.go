@@ -128,6 +128,69 @@ func TestBuiltInShapeCoverageMatchesEvaluator(t *testing.T) {
 	}
 }
 
+func TestResolveInteractivePolicyArtifactRootDiscoversPolicyFileUpward(t *testing.T) {
+	t.Setenv("BASH_POLICY_ARTIFACT_ROOT", "")
+	root := t.TempDir()
+	nested := filepath.Join(root, "worktree", "child")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, PolicyFileName), []byte("rules: []\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(oldWD); err != nil {
+			t.Fatalf("restore working directory: %v", err)
+		}
+	}()
+	if err := os.Chdir(nested); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ResolveInteractivePolicyArtifactRoot("")
+	if err != nil {
+		t.Fatalf("ResolveInteractivePolicyArtifactRoot failed: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Clean(want) {
+		t.Fatalf("artifact root = %q, want %q", got, filepath.Clean(want))
+	}
+}
+
+func TestBuiltInCoversFreeFormEchoShapesOnlyForEchoProfile(t *testing.T) {
+	if !BuiltInCoversCommandShape(`echo "=== <redacted> @ activation ==="`) {
+		t.Fatal("redacted echo shape should be covered by the built-in echo profile")
+	}
+	if !BuiltInCoversCommandShape("echo <safe-path>") {
+		t.Fatal("safe-path echo shape should be covered by the built-in echo profile")
+	}
+	if BuiltInCoversCommandShape("echo /tmp/outside") {
+		t.Fatal("absolute echo path should not bypass path safety")
+	}
+	if BuiltInCoversCommandShape("echo ../outside") {
+		t.Fatal("parent-relative echo path should not bypass path safety")
+	}
+	if BuiltInCoversCommandShape("echo <number>") {
+		t.Fatal("unsupported echo placeholder should not be covered")
+	}
+	if BuiltInCoversCommandShape("head --lines=<redacted> <safe-path>") {
+		t.Fatal("redacted inline flag values should not be covered")
+	}
+	if BuiltInCoversCommandShape("head -n <redacted> <safe-path>") {
+		t.Fatal("redacted space-form flag values should not be covered")
+	}
+	if BuiltInCoversCommandShape("tr <redacted> x") {
+		t.Fatal("redacted operands should not be covered for profiles that do not opt in")
+	}
+}
+
 func TestEvaluateRejectsUnsafeCommandShapes(t *testing.T) {
 	root := t.TempDir()
 
@@ -499,6 +562,7 @@ func TestBuildCandidatesOmitsBuiltInsResolvedFamiliesAndCuratedShapes(t *testing
 		},
 		{Provider: "claude", Decision: DecisionManual, Summary: "go test ./internal/bashpolicy/ -run TestZZProbe...", CommandShape: "go test ./internal/bashpolicy/ -run TestZZProbe..."},
 		{Provider: "claude", Decision: DecisionAllow, CommandShape: "rg TODO -- <safe-path>"},
+		{Provider: "codex", Decision: DecisionManual, CommandShape: "gh issue list"},
 	}
 
 	candidates := BuildCandidates("claude", []string{
@@ -546,6 +610,7 @@ func TestBuildCandidatesOmitsBuiltInsResolvedFamiliesAndCuratedShapes(t *testing
 		`command-shape:echo "=== staged separator (line 579) ==="`,
 		"command-shape:git show <safe-path>",
 		"command-shape:go test ./internal/bashpolicy/ -run TestZZProbe...",
+		"command-shape:gh issue list",
 	} {
 		if _, ok := got[unexpected]; ok {
 			t.Fatalf("unexpected candidate %s in %+v", unexpected, candidates.Candidates)
@@ -618,6 +683,13 @@ func TestDryRunCandidatesUseCanonicalCommandShapeIdentities(t *testing.T) {
 	if err := AppendDryRunEvent(root, "claude", ActivationDryRun, unresolvedCompound); err != nil {
 		t.Fatal(err)
 	}
+	if err := AppendDryRunEvent(root, "claude", ActivationDryRun, Result{
+		Decision:     DecisionManual,
+		Summary:      `echo "=== sensitive marker @ activation ==="; grep bashpolicy`,
+		CommandShape: `echo "=== <redacted> @ activation ===" ; grep bashpolicy`,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	events, err := ReadEvents(filepath.Join(root, DryRunLogFileName))
 	if err != nil {
@@ -644,6 +716,7 @@ func TestDryRunCandidatesUseCanonicalCommandShapeIdentities(t *testing.T) {
 		"command-shape:rtk git diff --cached internal/bashpolicy/policy.go",
 		"command-shape:git status",
 		"command-shape:echo ok",
+		`command-shape:echo "=== <redacted> @ activation ==="`,
 		"command-shape:git status; echo ok",
 		"command-shape:git status ; echo ok",
 		"command-shape:git status | grep bashpolicy ; echo ok",

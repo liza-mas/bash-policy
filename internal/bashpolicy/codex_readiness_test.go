@@ -33,7 +33,7 @@ func TestAssessCodexReadinessReportsOffForExplicitActivation(t *testing.T) {
 	projectRoot := t.TempDir()
 	writeCodexReadinessFixture(t, projectRoot, true)
 	hooksPath := filepath.Join(projectRoot, ".codex", "hooks.json")
-	if err := os.WriteFile(hooksPath, []byte(`{"hooks":{"PreToolUse":[{"hooks":[{"command":".codex/hooks/bash-policy.sh codex off"}]}]}}`), 0644); err != nil {
+	if err := os.WriteFile(hooksPath, []byte(`{"hooks":{"PreToolUse":[{"hooks":[{"command":"/usr/local/bin/bash-policy evaluate --provider codex --mode off --policy-artifact-root /project --safe-root \"$PWD\""}]}]}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -60,7 +60,7 @@ func TestAssessCodexReadinessReportsDegradedForMissingInstallPreconditions(t *te
 		}
 	})
 
-	t.Run("missing rtk hook wiring", func(t *testing.T) {
+	t.Run("missing bash policy safe root wiring", func(t *testing.T) {
 		projectRoot := t.TempDir()
 		writeCodexReadinessFixture(t, projectRoot, false)
 
@@ -68,53 +68,70 @@ func TestAssessCodexReadinessReportsDegradedForMissingInstallPreconditions(t *te
 		if readiness.Status != ReadinessDegraded {
 			t.Fatalf("status = %s, want %s; checks=%+v", readiness.Status, ReadinessDegraded, readiness.Checks)
 		}
-		if !hasReadinessCheck(readiness, "expected_hooks_wired", false) {
+		if !hasReadinessCheck(readiness, "bash_policy_hook_wired", false) {
 			t.Fatalf("expected hooks wiring check to fail: %+v", readiness.Checks)
-		}
-	})
-
-	t.Run("unexecutable hook file", func(t *testing.T) {
-		projectRoot := t.TempDir()
-		writeCodexReadinessFixture(t, projectRoot, true)
-		hookPath := filepath.Join(projectRoot, ".codex", "hooks", "bash-policy.sh")
-		if err := os.Chmod(hookPath, 0644); err != nil {
-			t.Fatal(err)
-		}
-
-		readiness := AssessCodexReadiness(projectRoot)
-		if readiness.Status != ReadinessDegraded {
-			t.Fatalf("status = %s, want %s; checks=%+v", readiness.Status, ReadinessDegraded, readiness.Checks)
-		}
-		if !hasReadinessCheck(readiness, "hook_file_bash-policy.sh", false) {
-			t.Fatalf("expected bash-policy hook-file check to fail: %+v", readiness.Checks)
 		}
 	})
 }
 
-func writeCodexReadinessFixture(t *testing.T, projectRoot string, includeRTKHookWiring bool) {
+func TestCodexHooksJSONRequiresSingleBashPolicyCommandShape(t *testing.T) {
+	hooksJSON := []byte(`{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[{"command":"/opt/one evaluate --provider codex"},{"command":"/opt/two --mode dry-run --policy-artifact-root /project --safe-root \"$PWD\""}]}]}}`)
+
+	if codexHooksJSONHasExpectedCommands(hooksJSON) {
+		t.Fatal("expected split hook commands not to satisfy Codex bash policy readiness")
+	}
+}
+
+func TestCodexHooksJSONAcceptsRenamedEvaluateCommand(t *testing.T) {
+	hooksJSON := []byte(`{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[{"command":"/opt/wrapper evaluate --provider codex --mode dry-run --policy-artifact-root /project --safe-root \"$PWD\""}]}]}}`)
+
+	if !codexHooksJSONHasExpectedCommands(hooksJSON) {
+		t.Fatal("expected renamed evaluate command to satisfy Codex bash policy readiness")
+	}
+}
+
+func TestCodexHooksJSONMatcherRegexMustMatchBash(t *testing.T) {
+	tests := []struct {
+		name    string
+		matcher string
+		want    bool
+	}{
+		{name: "match all", matcher: ".*", want: true},
+		{name: "codex match all", matcher: "*", want: true},
+		{name: "alternation", matcher: "Bash|Edit", want: true},
+		{name: "non matching", matcher: "Edit", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hooksJSON := []byte(`{"hooks":{"PreToolUse":[{"matcher":"` + tt.matcher + `","hooks":[{"command":"/opt/wrapper evaluate --provider codex --mode dry-run --policy-artifact-root /project --safe-root \"$PWD\""}]}]}}`)
+
+			got := codexHooksJSONHasExpectedCommands(hooksJSON)
+			if got != tt.want {
+				t.Fatalf("codexHooksJSONHasExpectedCommands = %t, want %t for matcher %q", got, tt.want, tt.matcher)
+			}
+		})
+	}
+}
+
+func writeCodexReadinessFixture(t *testing.T, projectRoot string, includeSafeRoot bool) {
 	t.Helper()
 
 	codexDir := filepath.Join(projectRoot, ".codex")
-	hooksDir := filepath.Join(codexDir, "hooks")
-	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(codexDir, "config.toml"), []byte("[features]\nhooks = true\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	hooksJSON := `{"hooks":{"SessionStart":[{"hooks":[{"command":".codex/hooks/session-context.sh"}]}],"PreToolUse":[{"hooks":[{"command":".codex/hooks/enforce-init.sh"},{"command":".codex/hooks/git-guard.sh"},{"command":".codex/hooks/bash-policy.sh"},{"command":".codex/hooks/worktree-path-guard.sh"}]}]}}`
-	if includeRTKHookWiring {
-		hooksJSON = `{"hooks":{"SessionStart":[{"hooks":[{"command":".codex/hooks/session-context.sh"}]}],"PreToolUse":[{"hooks":[{"command":".codex/hooks/enforce-init.sh"},{"command":".codex/hooks/git-guard.sh"},{"command":".codex/hooks/rtk-guard.sh"},{"command":".codex/hooks/bash-policy.sh"},{"command":".codex/hooks/worktree-path-guard.sh"}]}]}}`
+	command := `/usr/local/bin/bash-policy evaluate --provider codex --mode dry-run --policy-artifact-root /project`
+	if includeSafeRoot {
+		command += ` --safe-root $PWD`
 	}
+	hooksJSON := `{"hooks":{"PreToolUse":[{"hooks":[{"command":"` + command + `"}]}]}}`
 	if err := os.WriteFile(filepath.Join(codexDir, "hooks.json"), []byte(hooksJSON), 0644); err != nil {
 		t.Fatal(err)
-	}
-
-	for _, name := range []string{"enforce-init.sh", "session-context.sh", "git-guard.sh", "rtk-guard.sh", "bash-policy.sh", "worktree-path-guard.sh"} {
-		if err := os.WriteFile(filepath.Join(hooksDir, name), []byte("#!/bin/sh\n"), 0755); err != nil {
-			t.Fatal(err)
-		}
 	}
 }
 

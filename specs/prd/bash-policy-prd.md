@@ -127,7 +127,9 @@ permissions.
   hooks must pass `--policy-artifact-root` and at least one `--safe-root`.
 - `bash-policy activation on|dry-run|off --provider claude|codex|all`: update
   installed hook activation while preserving unrelated provider settings. Options
-  include `--policy-artifact-root`.
+  include `--policy-artifact-root` and `--command` for explicitly replacing the
+  installed hook command; otherwise activation changes preserve the existing
+  command and update only its mode.
 - `bash-policy report`: build a redacted aggregate report from dry-run JSONL
   evidence, defaulting to `[POLICY_ARTIFACT_ROOT]/.bash-policy-dry-run.jsonl`
   when stdin is empty. Options include `--provider`, `--policy-artifact-root`,

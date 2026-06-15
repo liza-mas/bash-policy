@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPO_OWNER=${BASH_POLICY_REPO_OWNER:-tangi-vass}
+REPO_OWNER=${BASH_POLICY_REPO_OWNER:-liza-mas}
 REPO_NAME=${BASH_POLICY_REPO_NAME:-bash-policy}
 INSTALL_DIR=${INSTALL_DIR:-"$HOME/.local/bin"}
 SOURCE_REPO=${BASH_POLICY_SOURCE_REPO:-"https://github.com/${REPO_OWNER}/${REPO_NAME}.git"}

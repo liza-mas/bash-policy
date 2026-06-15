@@ -144,6 +144,7 @@ type readOnlyUnixProfile struct {
 	forbiddenPrefixes     []string
 	shortFlagCluster      string
 	flagsMayBeOperands    bool
+	freeFormOperands      bool
 }
 
 var readOnlyUnixProfiles = map[string]readOnlyUnixProfile{
@@ -153,7 +154,7 @@ var readOnlyUnixProfiles = map[string]readOnlyUnixProfile{
 	"date":      {reason: "read-only date", maxOperands: 1, dateFormatOperandOnly: true, allowedFlags: stringSet("-u", "--utc", "--iso-8601"), valueFlags: stringSet("--date", "-d", "--rfc-3339"), inlineValuePrefixes: []string{"--date=", "--rfc-3339="}, forbiddenFlags: stringSet("-s", "--set"), forbiddenPrefixes: []string{"--set="}},
 	"diff":      {reason: "read-only diff", minOperands: 2, maxOperands: 2, operandsArePaths: true, allowedFlags: stringSet("-u", "--unified", "-q", "--brief", "-r", "--recursive", "--color", "--no-color"), valueFlags: stringSet("-U", "--label"), inlineValuePrefixes: []string{"-U", "--unified=", "--label=", "--color="}, forbiddenFlags: stringSet("-o", "--output"), forbiddenPrefixes: []string{"--output="}},
 	"dirname":   {reason: "read-only dirname", minOperands: 1, maxOperands: -1, operandsArePaths: true, allowedFlags: stringSet("-z")},
-	"echo":      {reason: "read-only echo", maxOperands: -1, allowedFlags: stringSet("-n", "-e", "-E"), flagsMayBeOperands: true},
+	"echo":      {reason: "read-only echo", maxOperands: -1, allowedFlags: stringSet("-n", "-e", "-E"), flagsMayBeOperands: true, freeFormOperands: true},
 	"file":      {reason: "read-only file", minOperands: 1, maxOperands: -1, operandsArePaths: true, allowedFlags: stringSet("-b", "--brief", "-L", "--dereference", "-h", "--no-dereference", "-i", "--mime", "--mime-type", "--mime-encoding"), forbiddenFlags: stringSet("-f", "--files-from", "-m", "--magic-file"), forbiddenPrefixes: []string{"--files-from=", "--magic-file="}},
 	"head":      {reason: "read-only head", minOperands: 1, maxOperands: -1, operandsArePaths: true, valueFlags: stringSet("-n", "--lines", "-c", "--bytes"), inlineValuePrefixes: []string{"-n", "-c", "--lines=", "--bytes="}},
 	"ls":        {reason: "read-only ls", maxOperands: -1, operandsArePaths: true, allowedFlags: stringSet("--all", "--almost-all", "--long", "--human-readable", "--recursive", "--directory", "--color", "--no-color"), inlineValuePrefixes: []string{"--color="}, shortFlagCluster: "1AadfhlRrSt"},
@@ -501,12 +502,15 @@ func parseReadOnlyUnixArgs(args []string, profile readOnlyUnixProfile, original 
 			if profile.flagForbidden(arg) {
 				return nil, result(DecisionManual, "read-only command flag can write, follow, or read broad inputs", original)
 			}
+			if strings.Contains(arg, "<redacted>") {
+				return nil, result(DecisionManual, "read-only command flag value is not safe", original)
+			}
 			if profile.allowedFlags[arg] || profile.shortClusterAllowed(arg) || profile.inlineValueAllowed(arg) {
 				continue
 			}
 			if profile.valueFlags[arg] {
 				i++
-				if i >= len(args) || LooksSensitive(args[i]) {
+				if i >= len(args) || strings.Contains(args[i], "<redacted>") || LooksSensitive(args[i]) {
 					return nil, result(DecisionManual, "read-only command flag value is not safe", original)
 				}
 				continue
@@ -533,7 +537,8 @@ func (profile readOnlyUnixProfile) flagForbidden(arg string) bool {
 func (profile readOnlyUnixProfile) inlineValueAllowed(arg string) bool {
 	for _, prefix := range profile.inlineValuePrefixes {
 		if strings.HasPrefix(arg, prefix) && len(arg) > len(prefix) {
-			return !LooksSensitive(strings.TrimPrefix(arg, prefix))
+			value := strings.TrimPrefix(arg, prefix)
+			return !strings.Contains(value, "<redacted>") && !LooksSensitive(value)
 		}
 	}
 	return false

@@ -9,7 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/liza-mas/liza/internal/bashpolicy"
+	"github.com/liza-mas/bash-policy/internal/bashpolicy"
+	"github.com/liza-mas/bash-policy/internal/embedded"
 )
 
 type BashPolicyEvaluateOptions struct {
@@ -37,6 +38,45 @@ type BashPolicyActivationOptions struct {
 	Provider           string
 	Activation         string
 	PolicyArtifactRoot string
+	Command            string
+	CommandOverride    bool
+	Reader             *bufio.Reader
+}
+
+type BashPolicyInitOptions struct {
+	Provider           string
+	PolicyArtifactRoot string
+	Command            string
+	Reader             *bufio.Reader
+}
+
+func BashPolicyInitCommand(output io.Writer, projectRoot string, opts BashPolicyInitOptions) error {
+	policyRoot, err := bashpolicy.ResolveRequiredPolicyArtifactRoot(firstNonEmpty(opts.PolicyArtifactRoot, projectRoot))
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(opts.Command) == "" {
+		return fmt.Errorf("bash-policy hook command is required")
+	}
+	if err := bashpolicy.EnsurePolicyArtifactIgnores(policyRoot); err != nil {
+		return err
+	}
+	provider, err := normalizeProvider(opts.Provider, true)
+	if err != nil {
+		return err
+	}
+	if provider == "claude" || provider == "all" {
+		if err := embedded.WriteClaudeSettings(projectRoot, policyRoot, opts.Command, opts.Reader); err != nil {
+			return err
+		}
+	}
+	if provider == "codex" || provider == "all" {
+		if err := embedded.WriteCodexProjectHooks(projectRoot, policyRoot, opts.Command, opts.Reader); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(output, "Bash policy initialized for %s\n", provider)
+	return nil
 }
 
 func BashPolicyEvaluateCommand(input io.Reader, output io.Writer, opts BashPolicyEvaluateOptions) error {
@@ -55,8 +95,8 @@ func BashPolicyEvaluateCommand(input io.Reader, output io.Writer, opts BashPolic
 	if activation == bashpolicy.ActivationOff {
 		return nil
 	}
-	policyRoot, rootErr := bashpolicy.ResolvePolicyArtifactRoot(opts.PolicyArtifactRoot, opts.SafeRoots)
-	if rootErr != nil && activation == bashpolicy.ActivationOn {
+	policyRoot, rootErr := bashpolicy.ResolveRequiredPolicyArtifactRoot(opts.PolicyArtifactRoot)
+	if rootErr != nil {
 		if opts.Diagnostics != nil {
 			fmt.Fprintf(opts.Diagnostics, "bash policy disabled: %v\n", rootErr)
 		}
@@ -95,15 +135,24 @@ func BashPolicyReportCommand(input io.Reader, output io.Writer, opts BashPolicyR
 		return err
 	}
 	var policy *bashpolicy.Policy
-	if len(results) == 0 && opts.PolicyArtifactRoot != "" {
-		events, err := bashpolicy.ReadEvents(filepath.Join(opts.PolicyArtifactRoot, bashpolicy.DryRunLogFileName))
+	policyRoot := ""
+	if len(results) == 0 || opts.PolicyArtifactRoot != "" {
+		policyRoot, err = bashpolicy.ResolveInteractivePolicyArtifactRoot(opts.PolicyArtifactRoot)
+		if err != nil {
+			if len(results) == 0 {
+				return err
+			}
+		}
+	}
+	if len(results) == 0 && policyRoot != "" {
+		events, err := bashpolicy.ReadEvents(filepath.Join(policyRoot, bashpolicy.DryRunLogFileName))
 		if err != nil {
 			return err
 		}
 		results = bashpolicy.ResultsFromEvents(events)
 	}
-	if opts.PolicyArtifactRoot != "" {
-		policy, err = bashpolicy.LoadPolicy(opts.PolicyArtifactRoot)
+	if policyRoot != "" {
+		policy, err = bashpolicy.LoadPolicy(policyRoot)
 		if err != nil {
 			return err
 		}
@@ -122,8 +171,8 @@ func BashPolicyReportCommand(input io.Reader, output io.Writer, opts BashPolicyR
 	return encoder.Encode(report)
 }
 
-func BashPolicyExportCommand(input io.Reader, output io.Writer, opts BashPolicyExportOptions) error {
-	policyRoot, err := bashpolicy.ResolvePolicyArtifactRoot(opts.PolicyArtifactRoot, nil)
+func BashPolicyExportCommand(output io.Writer, opts BashPolicyExportOptions) error {
+	policyRoot, err := bashpolicy.ResolveInteractivePolicyArtifactRoot(opts.PolicyArtifactRoot)
 	if err != nil {
 		return err
 	}
@@ -164,27 +213,27 @@ func BashPolicyActivationCommand(output io.Writer, projectRoot string, opts Bash
 	if err != nil {
 		return err
 	}
-	policyRoot, err := bashpolicy.ResolvePolicyArtifactRoot(firstNonEmpty(opts.PolicyArtifactRoot, projectRoot), []string{projectRoot})
+	policyRoot, err := bashpolicy.ResolveRequiredPolicyArtifactRoot(firstNonEmpty(opts.PolicyArtifactRoot, projectRoot))
 	if err != nil {
 		return err
 	}
 	if err := bashpolicy.EnsurePolicyArtifactIgnores(policyRoot); err != nil {
 		return err
 	}
-	provider := strings.ToLower(strings.TrimSpace(opts.Provider))
-	if provider == "" {
-		provider = "all"
+	if strings.TrimSpace(opts.Command) == "" {
+		return fmt.Errorf("bash-policy hook command is required")
 	}
-	if provider != "claude" && provider != "codex" && provider != "all" {
-		return fmt.Errorf("unsupported bash policy provider %q (want claude, codex, or all)", opts.Provider)
+	provider, err := normalizeProvider(opts.Provider, true)
+	if err != nil {
+		return err
 	}
 	if provider == "claude" || provider == "all" {
-		if err := updateClaudeBashPolicyActivation(projectRoot, activation); err != nil {
+		if err := updateClaudeBashPolicyActivation(projectRoot, policyRoot, opts.Command, activation, opts.CommandOverride); err != nil {
 			return err
 		}
 	}
 	if provider == "codex" || provider == "all" {
-		if err := updateCodexBashPolicyActivation(projectRoot, activation); err != nil {
+		if err := updateCodexBashPolicyActivation(projectRoot, policyRoot, opts.Command, activation, opts.CommandOverride); err != nil {
 			return err
 		}
 	}
@@ -221,10 +270,10 @@ func writeProviderHookOutput(output io.Writer, provider string, mode string, res
 		}
 		payload := map[string]any{
 			"hookSpecificOutput": map[string]any{
-				"hookEventName":              "PreToolUse",
-				"permissionDecision":         "allow",
-				"permissionDecisionReason":   result.Reason,
-				"lizaBashPolicyCommandShape": shape,
+				"hookEventName":            "PreToolUse",
+				"permissionDecision":       "allow",
+				"permissionDecisionReason": result.Reason,
+				"bashPolicyCommandShape":   shape,
 			},
 		}
 		return json.NewEncoder(output).Encode(payload)
@@ -275,4 +324,21 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func normalizeProvider(provider string, allowAll bool) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(provider))
+	if normalized == "" {
+		if allowAll {
+			return "all", nil
+		}
+		return "claude", nil
+	}
+	if normalized == "claude" || normalized == "codex" || allowAll && normalized == "all" {
+		return normalized, nil
+	}
+	if allowAll {
+		return "", fmt.Errorf("unsupported bash policy provider %q (want claude, codex, or all)", provider)
+	}
+	return "", fmt.Errorf("unsupported bash policy provider %q (want claude or codex)", provider)
 }

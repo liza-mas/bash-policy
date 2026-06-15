@@ -3,33 +3,24 @@ package embedded
 
 import (
 	"bufio"
-	_ "embed"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/liza-mas/bash-policy/internal/bashpolicy"
 )
-
-//go:embed "claude-settings.json"
-var claudeSettingsContent []byte
-
-//go:embed "codex-hooks.json"
-var codexHooksContent []byte
-
-//go:embed "hooks/bash-policy.sh"
-var bashPolicyHookContent []byte
 
 const (
 	dryRunLogFileName  = ".bash-policy-dry-run.jsonl"
 	candidatesFileName = ".bash-policy-candidates.yaml"
 )
 
-// WriteClaudeSettings writes bash-policy Claude settings and installs the
-// managed Claude hook script. Existing settings are merged only after user
-// confirmation.
-func WriteClaudeSettings(projectRoot string, reader *bufio.Reader) error {
+// WriteClaudeSettings writes or merges the standalone bash-policy Claude hook.
+// Existing settings are merged only after user confirmation.
+func WriteClaudeSettings(projectRoot string, policyRoot string, command string, reader *bufio.Reader) error {
 	if reader == nil {
 		reader = bufio.NewReader(os.Stdin)
 	}
@@ -57,11 +48,7 @@ func WriteClaudeSettings(projectRoot string, reader *bufio.Reader) error {
 		return fmt.Errorf("failed to create .claude directory: %w", err)
 	}
 
-	var managedSettings map[string]any
-	if err := json.Unmarshal(claudeSettingsContent, &managedSettings); err != nil {
-		return fmt.Errorf("failed to parse embedded Claude settings: %w", err)
-	}
-
+	managedSettings := managedClaudeSettings(policyRoot, command)
 	finalSettings := managedSettings
 	if existingSettings != nil {
 		finalSettings = mergeSettings(managedSettings, existingSettings)
@@ -74,19 +61,16 @@ func WriteClaudeSettings(projectRoot string, reader *bufio.Reader) error {
 	if err := os.WriteFile(settingsPath, append(output, '\n'), 0o644); err != nil {
 		return fmt.Errorf("failed to write Claude settings: %w", err)
 	}
-	if err := WriteHooks(projectRoot); err != nil {
-		return fmt.Errorf("failed to write Claude hooks: %w", err)
-	}
-	if err := ensureBashPolicyArtifactExcludes(projectRoot); err != nil {
+	if err := ensureBashPolicyArtifactExcludes(policyRoot); err != nil {
 		return fmt.Errorf("failed to exclude Bash policy artifacts: %w", err)
 	}
 	return nil
 }
 
-// WriteCodexProjectHooks writes project-local Codex hook configuration and the
-// managed bash-policy hook script. Existing config and hooks are merged only
-// after user confirmation.
-func WriteCodexProjectHooks(projectRoot string, reader *bufio.Reader) error {
+// WriteCodexProjectHooks writes or merges standalone project-local Codex hook
+// configuration. Existing config and hooks are merged only after user
+// confirmation.
+func WriteCodexProjectHooks(projectRoot string, policyRoot string, command string, reader *bufio.Reader) error {
 	if reader == nil {
 		reader = bufio.NewReader(os.Stdin)
 	}
@@ -105,15 +89,12 @@ func WriteCodexProjectHooks(projectRoot string, reader *bufio.Reader) error {
 		return nil
 	}
 
-	hooksOutput, installed, err := renderCodexHooksJSON(filepath.Join(codexDir, "hooks.json"), reader)
+	hooksOutput, installed, err := renderCodexHooksJSON(filepath.Join(codexDir, "hooks.json"), policyRoot, command, reader)
 	if err != nil {
 		return err
 	}
 	if !installed {
 		return nil
-	}
-	if err := WriteCodexHooks(projectRoot); err != nil {
-		return err
 	}
 	if err := os.WriteFile(filepath.Join(codexDir, "hooks.json"), hooksOutput, 0o644); err != nil {
 		return fmt.Errorf("failed to write Codex hooks.json: %w", err)
@@ -123,38 +104,59 @@ func WriteCodexProjectHooks(projectRoot string, reader *bufio.Reader) error {
 			return fmt.Errorf("failed to write Codex project config: %w", err)
 		}
 	}
-	if err := ensureBashPolicyArtifactExcludes(projectRoot); err != nil {
+	if err := ensureBashPolicyArtifactExcludes(policyRoot); err != nil {
 		return fmt.Errorf("failed to exclude Bash policy artifacts: %w", err)
 	}
 	return nil
 }
 
-// WriteHooks writes managed bash-policy hook scripts to .claude/hooks.
-func WriteHooks(projectRoot string) error {
-	return writeHookScripts(filepath.Join(projectRoot, ".claude", "hooks"))
+func managedClaudeSettings(policyRoot string, command string) map[string]any {
+	return map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{providerHookEntry("Bash", ProviderHookCommand(command, "claude", "dry-run", policyRoot), "")},
+		},
+	}
 }
 
-// WriteCodexHooks writes managed bash-policy hook scripts to .codex/hooks.
-func WriteCodexHooks(projectRoot string) error {
-	return writeHookScripts(filepath.Join(projectRoot, ".codex", "hooks"))
+func managedCodexHooks(policyRoot string, command string) map[string]any {
+	return map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{providerHookEntry("^Bash$", ProviderHookCommand(command, "codex", "dry-run", policyRoot), "Evaluating Bash command policy")},
+		},
+	}
 }
 
-func writeHookScripts(hooksDir string) error {
-	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
-		return fmt.Errorf("failed to create hooks directory: %w", err)
+func providerHookEntry(matcher string, command string, statusMessage string) map[string]any {
+	hook := map[string]any{
+		"command": command,
+		"timeout": float64(5),
+		"type":    "command",
 	}
-	for name, content := range hookScriptContents() {
-		if err := os.WriteFile(filepath.Join(hooksDir, name), content, 0o755); err != nil {
-			return fmt.Errorf("failed to write %s: %w", name, err)
-		}
+	if statusMessage != "" {
+		hook["statusMessage"] = statusMessage
 	}
-	return nil
+	return map[string]any{
+		"matcher": matcher,
+		"hooks":   []any{hook},
+	}
 }
 
-func hookScriptContents() map[string][]byte {
-	return map[string][]byte{
-		"bash-policy.sh": bashPolicyHookContent,
+// ProviderHookCommand returns the direct provider hook command installed by the
+// standalone CLI. The safe-root argument intentionally remains an environment
+// reference because the provider expands it at hook runtime.
+func ProviderHookCommand(command string, provider string, activation string, policyRoot string) string {
+	safeRoot := `"$PWD"`
+	if provider == "claude" {
+		safeRoot = `"$CLAUDE_PROJECT_DIR"`
 	}
+	return strings.Join([]string{
+		shellQuote(command),
+		"evaluate",
+		"--provider", provider,
+		"--mode", activation,
+		"--policy-artifact-root", shellQuote(policyRoot),
+		"--safe-root", safeRoot,
+	}, " ")
 }
 
 func confirmMerge(prompt string, reader *bufio.Reader) (bool, error) {
@@ -316,12 +318,8 @@ func mergeCodexHooksFeature(content string) (string, bool) {
 	return ensureTrailingNewline(strings.Join(lines, "\n")), true
 }
 
-func renderCodexHooksJSON(hooksPath string, reader *bufio.Reader) ([]byte, bool, error) {
-	var managedHooks map[string]any
-	if err := json.Unmarshal(codexHooksContent, &managedHooks); err != nil {
-		return nil, false, fmt.Errorf("failed to parse embedded Codex hooks: %w", err)
-	}
-
+func renderCodexHooksJSON(hooksPath string, policyRoot string, command string, reader *bufio.Reader) ([]byte, bool, error) {
+	managedHooks := managedCodexHooks(policyRoot, command)
 	finalHooks := managedHooks
 	if existingData, err := os.ReadFile(hooksPath); err == nil {
 		ok, err := confirmMerge("Should bash-policy hooks be merged into .codex/hooks.json? (y/n): ", reader)
@@ -440,18 +438,41 @@ func mergeHooks(managed, existing map[string]any) map[string]any {
 }
 
 func unionHookEntries(managed, existing []any) []any {
-	existingCommands := make(map[string]bool)
+	existingActivationByProvider := map[string]string{}
 	for _, entry := range existing {
 		for _, command := range hookCommands(entry) {
-			existingCommands[canonicalHookCommand(command)] = true
+			info, ok := bashpolicy.ParseHookCommand(command)
+			if ok {
+				existingActivationByProvider[info.Provider] = info.Activation
+			}
 		}
 	}
 
 	result := make([]any, 0, len(managed)+len(existing))
+	managedProviders := map[string]bool{}
 	for _, entry := range managed {
+		entryProviders := bashPolicyProviders(entry)
+		if len(entryProviders) > 0 {
+			next := cloneJSONValue(entry)
+			for _, provider := range entryProviders {
+				managedProviders[provider] = true
+				if activation := existingActivationByProvider[provider]; activation != "" {
+					rewriteBashPolicyCommandActivation(next, provider, activation)
+				}
+			}
+			result = append(result, next)
+			continue
+		}
+
+		existingCommands := make(map[string]bool)
+		for _, existingEntry := range existing {
+			for _, command := range hookCommands(existingEntry) {
+				existingCommands[command] = true
+			}
+		}
 		collides := false
 		for _, command := range hookCommands(entry) {
-			if existingCommands[canonicalHookCommand(command)] {
+			if existingCommands[command] {
 				collides = true
 				break
 			}
@@ -460,7 +481,18 @@ func unionHookEntries(managed, existing []any) []any {
 			result = append(result, entry)
 		}
 	}
-	result = append(result, existing...)
+	for _, entry := range existing {
+		skip := false
+		for _, provider := range bashPolicyProviders(entry) {
+			if managedProviders[provider] {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			result = append(result, entry)
+		}
+	}
 	return result
 }
 
@@ -486,22 +518,65 @@ func hookCommands(entry any) []string {
 	return commands
 }
 
-func canonicalHookCommand(command string) string {
-	if !strings.Contains(command, "bash-policy.sh") {
-		return command
-	}
-	for _, provider := range []string{" claude ", " codex "} {
-		if !strings.Contains(command, provider) {
-			continue
+func bashPolicyProviders(entry any) []string {
+	seen := map[string]bool{}
+	var providers []string
+	for _, command := range hookCommands(entry) {
+		info, ok := bashpolicy.ParseHookCommand(command)
+		if ok && !seen[info.Provider] {
+			seen[info.Provider] = true
+			providers = append(providers, info.Provider)
 		}
-		for _, activation := range []string{"audit", "allow", "dry-run", "on", "off"} {
-			needle := provider + activation
-			if strings.Contains(command, needle) {
-				return strings.Replace(command, needle, provider+"<activation>", 1)
+	}
+	return providers
+}
+
+func cloneJSONValue(value any) any {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var cloned any
+	if err := json.Unmarshal(data, &cloned); err != nil {
+		return value
+	}
+	return cloned
+}
+
+func rewriteBashPolicyCommandActivation(value any, provider string, activation string) {
+	switch typed := value.(type) {
+	case map[string]any:
+		if command, ok := typed["command"].(string); ok {
+			info, isBashPolicy := bashpolicy.ParseHookCommand(command)
+			if isBashPolicy && info.Provider == provider {
+				if rewritten, ok := bashpolicy.RewriteHookCommandActivation(command, activation); ok {
+					typed["command"] = rewritten
+				}
 			}
 		}
+		for _, child := range typed {
+			rewriteBashPolicyCommandActivation(child, provider, activation)
+		}
+	case []any:
+		for _, child := range typed {
+			rewriteBashPolicyCommandActivation(child, provider, activation)
+		}
 	}
-	return command
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	if strings.IndexFunc(value, func(r rune) bool {
+		return !(r >= 'A' && r <= 'Z' ||
+			r >= 'a' && r <= 'z' ||
+			r >= '0' && r <= '9' ||
+			strings.ContainsRune("/._-:", r))
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func unionStringArrays(a, b []any) []any {

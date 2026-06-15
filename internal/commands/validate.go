@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/tangi-vass/bash-policy/internal/bashpolicy"
+	"github.com/liza-mas/bash-policy/internal/bashpolicy"
 )
 
 // WarnCodexBashPolicyReadiness writes the warning used by callers that need to
