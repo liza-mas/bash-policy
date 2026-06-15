@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "command": "root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0; hook=\"$root/.codex/hooks/bash-policy.sh\"; [ -x \"$hook\" ] || { echo \"Missing bash-policy Codex hook: $hook. Reinstall project hooks or remove .codex/hooks.json to disable them.\" >&2; exit 1; }; bash \"$hook\" codex dry-run",
+            "statusMessage": "Evaluating Bash command policy",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}
