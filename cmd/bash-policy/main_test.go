@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -102,6 +103,77 @@ func TestRunEvaluateCLIJSON(t *testing.T) {
 	}
 	if result.Decision != bashpolicy.DecisionAllow {
 		t.Fatalf("decision = %s, want allow; result=%+v", result.Decision, result)
+	}
+}
+
+func TestRunValidateCLI(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, bashpolicy.PolicyFileName), []byte(strings.Join([]string{
+		"rules:",
+		"- kind: command-shape",
+		"  identity: gh pr view <number>",
+		"  decision: allow",
+		"",
+	}, "\n")), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := runWithBuildIdentity(
+		[]string{"validate", "--policy-artifact-root", root},
+		strings.NewReader(""),
+		&stdout,
+		&stderr,
+		version.BuildIdentity{},
+	)
+
+	if got != statusOK {
+		t.Fatalf("runWithBuildIdentity() status = %d, want %d; stderr=%s", got, statusOK, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Bash policy valid:") {
+		t.Fatalf("stdout = %q, want validation summary", stdout.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunValidateCLIRejectsInvalidPolicy(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, bashpolicy.PolicyFileName), []byte(strings.Join([]string{
+		"rules:",
+		"- kind: command-shape",
+		"  identity: gh pr view ...",
+		"",
+	}, "\n")), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := runWithBuildIdentity(
+		[]string{"validate", "--policy-artifact-root", root},
+		strings.NewReader(""),
+		&stdout,
+		&stderr,
+		version.BuildIdentity{},
+	)
+
+	if got != statusUsage {
+		t.Fatalf("runWithBuildIdentity() status = %d, want %d", got, statusUsage)
+	}
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	for _, want := range []string{"bash policy validation failed", "rules[0].decision is required"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr missing %q:\n%s", want, stderr.String())
+		}
 	}
 }
 

@@ -164,6 +164,74 @@ func TestResolveInteractivePolicyArtifactRootDiscoversPolicyFileUpward(t *testin
 	}
 }
 
+func TestValidatePolicyFileAcceptsSupportedRuleKinds(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, PolicyFileName)
+	if err := os.WriteFile(path, []byte(strings.Join([]string{
+		"rules:",
+		"  - kind: command-shape",
+		"    identity: gh pr view <number> --json <fields>",
+		"    decision: allow",
+		"  - kind: permission-family",
+		"    identity: Bash(gh:*)",
+		"    status: resolved",
+		"",
+	}, "\n")), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ValidatePolicyFile(path)
+	if err != nil {
+		t.Fatalf("ValidatePolicyFile failed: %v", err)
+	}
+	if len(result.Issues) != 0 {
+		t.Fatalf("issues = %+v, want none", result.Issues)
+	}
+	if result.RuleCount != 2 {
+		t.Fatalf("rule count = %d, want 2", result.RuleCount)
+	}
+}
+
+func TestValidatePolicyFileReportsSchemaIssues(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, PolicyFileName)
+	if err := os.WriteFile(path, []byte(strings.Join([]string{
+		"rules:",
+		"  - kind: command-shape",
+		"    identity: gh pr view ...",
+		"  - kind: permission-family",
+		"    identity: gh",
+		"    decision: allow",
+		"  - kind: other",
+		"    identity: noop",
+		"    decision: allow",
+		"",
+	}, "\n")), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ValidatePolicyFile(path)
+	if err != nil {
+		t.Fatalf("ValidatePolicyFile failed: %v", err)
+	}
+	messages := make([]string, 0, len(result.Issues))
+	for _, issue := range result.Issues {
+		messages = append(messages, issue.String())
+	}
+	joined := strings.Join(messages, "\n")
+	for _, want := range []string{
+		"line 2:5: rules[0].decision is required",
+		"line 3:15: rules[0].identity is not a usable command-shape identity",
+		"line 6:15: rules[1].decision is not supported for permission-family rules",
+		"line 5:15: rules[1].identity must be a canonical Bash(<family>:*) permission family",
+		"line 7:11: rules[2].kind must be \"command-shape\" or \"permission-family\"",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("issues missing %q:\n%s", want, joined)
+		}
+	}
+}
+
 func TestBuiltInCoversFreeFormEchoShapesOnlyForEchoProfile(t *testing.T) {
 	if !BuiltInCoversCommandShape(`echo "=== <redacted> @ activation ==="`) {
 		t.Fatal("redacted echo shape should be covered by the built-in echo profile")

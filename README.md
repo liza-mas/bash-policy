@@ -30,6 +30,7 @@ bash-policy --version
 bash-policy init --provider claude|codex|all [--command COMMAND]
 bash-policy evaluate --provider claude|codex --mode on|dry-run|off
 bash-policy activation on|dry-run|off --provider claude|codex|all [--command COMMAND]
+bash-policy validate [--policy-artifact-root DIR]
 bash-policy report
 bash-policy export
 bash-policy codex-readiness

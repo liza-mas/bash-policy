@@ -31,6 +31,7 @@ Usage:
   bash-policy init [--provider claude|codex|all] [--policy-artifact-root DIR] [--command COMMAND]
   bash-policy evaluate [--provider claude|codex] [--mode on|dry-run|off] --policy-artifact-root DIR --safe-root DIR
   bash-policy activation on|dry-run|off [--provider claude|codex|all] [--policy-artifact-root DIR] [--command COMMAND]
+  bash-policy validate [--policy-artifact-root DIR]
   bash-policy report [--provider claude|codex] [--policy-artifact-root DIR] [--claude-settings PATH]
   bash-policy export [--provider claude|codex] [--policy-artifact-root DIR] [--claude-settings PATH]
   bash-policy codex-readiness [--json]
@@ -70,6 +71,8 @@ func runWithBuildIdentity(args []string, stdin io.Reader, stdout io.Writer, stde
 		err = runEvaluate(args[1:], stdin, stdout, stderr)
 	case "activation":
 		err = runActivation(args[1:], stdin, stdout)
+	case "validate":
+		err = runValidate(args[1:], stdout)
 	case "report":
 		err = runReport(args[1:], stdin, stdout)
 	case "export":
@@ -177,6 +180,20 @@ func runActivation(args []string, stdin io.Reader, stdout io.Writer) error {
 		Command:            command,
 		CommandOverride:    commandOverride,
 		Reader:             bufio.NewReader(stdin),
+	})
+}
+
+func runValidate(args []string, stdout io.Writer) error {
+	fs := newFlagSet("validate")
+	policyRoot := fs.String("policy-artifact-root", "", "durable root for bash policy artifacts")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("validate does not accept positional arguments")
+	}
+	return commands.BashPolicyValidateCommand(stdout, commands.BashPolicyValidateOptions{
+		PolicyArtifactRoot: *policyRoot,
 	})
 }
 

@@ -36,6 +36,7 @@ Bash policy file.
 | `bash-policy init --provider claude` | Writes or merges the Claude PreToolUse Bash hook. |
 | `bash-policy activation ... --provider claude` | Updates the installed hook activation. |
 | `bash-policy evaluate` | Does not read Claude settings; runtime decisions come from built-ins, `.bash-policy.yaml`, safe roots, and the requested activation mode. |
+| `bash-policy validate` | Reads `.bash-policy.yaml` and reports schema errors before activation or export workflows rely on it. |
 | `bash-policy report --claude-settings .claude/settings.json` | Reads current `Bash(...)` permissions so reports can list broad Claude permission families to migrate. |
 | `bash-policy export --claude-settings .claude/settings.json` | Reads current `Bash(...)` permissions so `.bash-policy-candidates.yaml` can include unresolved `permission-family` candidates. |
 
@@ -94,6 +95,12 @@ exists, pass `--policy-artifact-root` explicitly.
      - kind: command-shape
        identity: gh pr view <number>
        decision: allow
+   ```
+
+   Validate the curated policy before relying on it:
+
+   ```bash
+   bash-policy validate --policy-artifact-root /abs/project
    ```
 
 6. Prefer normalized placeholders over literal local values when the shape is

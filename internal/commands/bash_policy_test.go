@@ -146,6 +146,60 @@ func TestBashPolicyEvaluateCommandFailsClosedWithoutPolicyRootInDryRun(t *testin
 	}
 }
 
+func TestBashPolicyValidateCommandReportsValidPolicy(t *testing.T) {
+	policyRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(policyRoot, bashpolicy.PolicyFileName), []byte(strings.Join([]string{
+		"rules:",
+		"- kind: command-shape",
+		"  identity: gh issue view <number>",
+		"  decision: manual",
+		"- kind: permission-family",
+		"  identity: Bash(gh:*)",
+		"  status: resolved",
+		"",
+	}, "\n")), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := BashPolicyValidateCommand(&output, BashPolicyValidateOptions{
+		PolicyArtifactRoot: policyRoot,
+	}); err != nil {
+		t.Fatalf("BashPolicyValidateCommand failed: %v", err)
+	}
+	if !strings.Contains(output.String(), "Bash policy valid:") || !strings.Contains(output.String(), "(2 rules)") {
+		t.Fatalf("output = %q, want valid summary", output.String())
+	}
+}
+
+func TestBashPolicyValidateCommandRejectsInvalidPolicy(t *testing.T) {
+	policyRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(policyRoot, bashpolicy.PolicyFileName), []byte(strings.Join([]string{
+		"rules:",
+		"- kind: command-shape",
+		"  identity: gh issue view ...",
+		"",
+	}, "\n")), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	err := BashPolicyValidateCommand(&output, BashPolicyValidateOptions{
+		PolicyArtifactRoot: policyRoot,
+	})
+	if err == nil {
+		t.Fatal("expected invalid policy to fail")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("output = %q, want empty on validation failure", output.String())
+	}
+	for _, want := range []string{"bash policy validation failed", "rules[0].decision is required", "not a usable command-shape identity"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error missing %q:\n%v", want, err)
+		}
+	}
+}
+
 func TestBashPolicyReportCommandIncludesMigrationAndRedactsSummaries(t *testing.T) {
 	settingsPath := filepath.Join(t.TempDir(), "settings.json")
 	settings := []byte(`{"permissions":{"allow":["Bash(git:*)","Bash(printenv:*)"]}}`)

@@ -130,6 +130,9 @@ permissions.
   include `--policy-artifact-root` and `--command` for explicitly replacing the
   installed hook command; otherwise activation changes preserve the existing
   command and update only its mode.
+- `bash-policy validate`: validate the curated `.bash-policy.yaml` schema,
+  defaulting to interactive `policy-artifact-root` discovery and accepting
+  `--policy-artifact-root` for explicit roots.
 - `bash-policy report`: build a redacted aggregate report from dry-run JSONL
   evidence, defaulting to `[POLICY_ARTIFACT_ROOT]/.bash-policy-dry-run.jsonl`
   when stdin is empty. Options include `--provider`, `--policy-artifact-root`,
