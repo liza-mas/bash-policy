@@ -369,6 +369,8 @@ func TestPolicyCommandRuleSupportsTerminalVariadicPlaceholder(t *testing.T) {
 		{Kind: "command-shape", Identity: `echo "=== staged separator (line 579) ==="`, Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "sed -n <number>,<number>p", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "tool <fields>.json", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "grep <pattern> <safe-path>", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "grep -rn <pattern> --include=*.go .", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "bad <safe-path>.bak", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "bad <safe-path>... suffix", Decision: DecisionAllow},
 		{Kind: "permission-family", Identity: "git diff --cached <safe-path>...", Decision: DecisionDeny},
@@ -382,6 +384,11 @@ func TestPolicyCommandRuleSupportsTerminalVariadicPlaceholder(t *testing.T) {
 		`echo "=== staged separator (line 579) ==="`,
 		"sed -n 1,140p",
 		"tool title,body.json",
+		`grep "func Test" <safe-path>`,
+		"grep <fields> <safe-path>",
+		"grep <number> <safe-path>",
+		"grep <safe-path> <safe-path>",
+		"grep -rn ResolvePolicyArtifactRoot --include=*.go .",
 	}
 	for _, identity := range matches {
 		if _, ok := policy.CommandRule(identity); !ok {
@@ -398,6 +405,11 @@ func TestPolicyCommandRuleSupportsTerminalVariadicPlaceholder(t *testing.T) {
 		"sed -n 1,140q",
 		"bad README.md.bak",
 		"bad <safe-path> suffix",
+		"grep -flag <safe-path>",
+		"grep <redacted> <safe-path>",
+		"grep <unknown> <safe-path>",
+		"grep | <safe-path>",
+		"grep sk-live-token <safe-path>",
 	}
 	for _, identity := range nonMatches {
 		if rule, ok := policy.CommandRule(identity); ok {
@@ -687,6 +699,110 @@ func TestBuildCandidatesOmitsBuiltInsResolvedFamiliesAndCuratedShapes(t *testing
 	for _, candidate := range candidates.Candidates {
 		if strings.Contains(candidate.Identity, "TestZZProbe...") {
 			t.Fatalf("candidate identity is truncated: %+v", candidate)
+		}
+	}
+}
+
+func TestBuildCandidatesSkipsLossyEmptyShapeCompoundSummary(t *testing.T) {
+	root := t.TempDir()
+	events := []Event{{
+		Provider: "claude",
+		Decision: DecisionManual,
+		Reason:   "path argument is outside the safe roots or uses unsafe patterns",
+		Summary:  `grep -E ^\+func|^\+\t*t\.Run|^\+\t*name:|^\+\t\t\{name`,
+	}}
+
+	candidates := BuildCandidates("claude", nil, nil, events, root)
+
+	if len(candidates.Candidates) != 0 {
+		t.Fatalf("lossy empty-shape summary produced candidates: %+v", candidates.Candidates)
+	}
+}
+
+func TestBuildCandidatesFallsBackToCommandShapeForLossySummary(t *testing.T) {
+	root := t.TempDir()
+	events := []Event{{
+		Provider:     "claude",
+		Decision:     DecisionManual,
+		Reason:       "path argument is outside the safe roots or uses unsafe patterns",
+		Summary:      `grep -E ^\+func|^\+\t*t\.Run|^\+\t*name:|^\+\t\t\{name`,
+		CommandShape: `grep -E ^\+func|^\+\t*t\.Run|^\+\t*name:|^\+\t\t\{name`,
+	}}
+
+	candidates := BuildCandidates("claude", nil, nil, events, root)
+
+	if len(candidates.Candidates) != 1 {
+		t.Fatalf("candidates = %+v, want one stored command-shape candidate", candidates.Candidates)
+	}
+	identity := candidates.Candidates[0].Identity
+	if !strings.HasPrefix(identity, "grep -E ") || !strings.Contains(identity, `^\+func|`) {
+		t.Fatalf("candidate identity = %q, want stored grep regex command shape", identity)
+	}
+	for _, unexpected := range []string{"<safe-path>", `^\+\t*name:`, `^\+\t*t\.Run`} {
+		if identity == unexpected {
+			t.Fatalf("candidate identity = %q, want no split regex fragment", identity)
+		}
+	}
+}
+
+func TestSanitizeSummaryPreservesQuotedWhitespace(t *testing.T) {
+	got := sanitizeSummary(` echo    'alpha  beta'    "sk-live-abc123"    "gamma  delta" `)
+	want := `echo 'alpha  beta' <redacted> "gamma  delta"`
+
+	if got != want {
+		t.Fatalf("sanitized summary = %q, want %q", got, want)
+	}
+}
+
+func TestAppendDryRunEventPreservesQuotedWhitespace(t *testing.T) {
+	root := t.TempDir()
+	result := Evaluate(Request{Command: `echo 'alpha  beta'`, ProjectRoot: root})
+	if result.Decision != DecisionAllow {
+		t.Fatalf("decision = %s, want allow; result=%+v", result.Decision, result)
+	}
+	if err := AppendDryRunEvent(root, "claude", ActivationDryRun, result); err != nil {
+		t.Fatal(err)
+	}
+	events, err := ReadEvents(filepath.Join(root, DryRunLogFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if !strings.Contains(events[0].Summary, `'alpha  beta'`) {
+		t.Fatalf("summary = %q, want quoted token with preserved whitespace", events[0].Summary)
+	}
+}
+
+func TestDryRunSummaryPreservesQuotedRegexWithoutSplitCandidateExport(t *testing.T) {
+	root := t.TempDir()
+	command := `grep -E '^\+func|^\+\t*t\.Run|^\+\t*name:|^\+\t\t\{name'`
+	result := Evaluate(Request{Command: command, ProjectRoot: root})
+	if result.Decision != DecisionManual {
+		t.Fatalf("decision = %s, want manual; result=%+v", result.Decision, result)
+	}
+	if err := AppendDryRunEvent(root, "claude", ActivationDryRun, result); err != nil {
+		t.Fatal(err)
+	}
+	events, err := ReadEvents(filepath.Join(root, DryRunLogFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if !strings.Contains(events[0].Summary, `'^\+func|`) {
+		t.Fatalf("summary = %q, want shell-quoted regex token", events[0].Summary)
+	}
+
+	candidates := BuildCandidates("claude", nil, nil, events, root)
+
+	for _, candidate := range candidates.Candidates {
+		for _, unexpected := range []string{"<safe-path>", `^\+\t*name:`, `^\+\t*t\.Run`} {
+			if candidate.Identity == unexpected {
+				t.Fatalf("candidate identity = %q, want no split regex fragment", candidate.Identity)
+			}
 		}
 	}
 }

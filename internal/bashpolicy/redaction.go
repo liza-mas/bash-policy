@@ -2,8 +2,12 @@ package bashpolicy
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
+
+	"mvdan.cc/sh/v3/syntax"
 )
 
 var sensitiveExtensions = map[string]bool{
@@ -155,14 +159,11 @@ func redactedSummary(argv []string) string {
 	parts := make([]string, 0, limit+1)
 	for _, arg := range argv[:limit] {
 		if LooksSensitive(arg) {
-			parts = append(parts, "<redacted>")
-			continue
+			arg = "<redacted>"
+		} else if len(arg) > 80 {
+			arg = arg[:77] + "..."
 		}
-		if len(arg) > 80 {
-			parts = append(parts, arg[:77]+"...")
-			continue
-		}
-		parts = append(parts, arg)
+		parts = append(parts, shellQuoteSummaryToken(arg))
 	}
 	if len(argv) > limit {
 		parts = append(parts, "...")
@@ -170,15 +171,113 @@ func redactedSummary(argv []string) string {
 	return strings.Join(parts, " ")
 }
 
+func shellQuoteSummaryToken(arg string) string {
+	quoted, err := syntax.Quote(arg, syntax.LangBash)
+	if err != nil {
+		return strconv.Quote(arg)
+	}
+	return quoted
+}
+
 func sanitizeSummary(summary string) string {
-	fields := strings.Fields(summary)
-	if len(fields) == 0 {
+	tokens := summaryTokens(summary)
+	if len(tokens) == 0 {
 		return ""
 	}
-	for i, field := range fields {
-		if LooksSensitive(field) {
-			fields[i] = "<redacted>"
+	parts := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		text := summary[token.start:token.end]
+		if LooksSensitive(text) || LooksSensitive(dequotedSummaryToken(text)) {
+			text = "<redacted>"
 		}
+		parts = append(parts, text)
 	}
-	return strings.Join(fields, " ")
+	return strings.Join(parts, " ")
+}
+
+func dequotedSummaryToken(token string) string {
+	if len(token) < 2 {
+		return token
+	}
+	quote := token[0]
+	if (quote != '\'' && quote != '"') || token[len(token)-1] != quote {
+		return token
+	}
+	value := token[1 : len(token)-1]
+	if quote == '"' {
+		value = unescapeDoubleQuotedSummaryToken(value)
+	}
+	return value
+}
+
+func unescapeDoubleQuotedSummaryToken(value string) string {
+	var builder strings.Builder
+	for i := 0; i < len(value); i++ {
+		if value[i] == '\\' && i+1 < len(value) {
+			i++
+		}
+		builder.WriteByte(value[i])
+	}
+	return builder.String()
+}
+
+type summaryToken struct {
+	start int
+	end   int
+}
+
+func summaryTokens(summary string) []summaryToken {
+	tokens := []summaryToken{}
+	for i := 0; i < len(summary); {
+		for i < len(summary) {
+			r, size := rune(summary[i]), 1
+			if r >= utf8.RuneSelf {
+				r, size = utf8.DecodeRuneInString(summary[i:])
+			}
+			if !unicode.IsSpace(r) {
+				break
+			}
+			i += size
+		}
+		if i >= len(summary) {
+			break
+		}
+		start := i
+		quote := byte(0)
+		for i < len(summary) {
+			c := summary[i]
+			if quote == 0 {
+				r, size := rune(c), 1
+				if c >= utf8.RuneSelf {
+					r, size = utf8.DecodeRuneInString(summary[i:])
+				}
+				if unicode.IsSpace(r) {
+					break
+				}
+				if c == '\'' || c == '"' {
+					quote = c
+					i++
+					continue
+				}
+				if c == '\\' && i+1 < len(summary) {
+					i += 2
+					continue
+				}
+				i += size
+				continue
+			}
+			if c == quote {
+				quote = 0
+				i++
+				continue
+			}
+			if quote == '"' && c == '\\' && i+1 < len(summary) {
+				i += 2
+				continue
+			}
+			i++
+		}
+		tokens = append(tokens, summaryToken{start: start, end: i})
+	}
+	return tokens
 }

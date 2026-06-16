@@ -111,6 +111,7 @@ exists, pass `--policy-artifact-root` explicitly.
    | `<safe-path>` | A path accepted by the configured safe roots. Prefer this over repository-specific paths when the command should be allowed for any safe project file. |
    | `<number>` | A numeric argument such as a PR number, issue number, port, or count. |
    | `<fields>` | A comma-separated field list. |
+   | `<pattern>` | A single non-sensitive search-pattern token, intended for grep-style pattern positions. It can match normalized scalar placeholders such as `<fields>`, `<number>`, or `<safe-path>` when those appear as the pattern operand. |
    | `<redacted>` | A value hidden from artifacts because it looked sensitive. Do not allow this shape unless you can replace it with a safer, intentional shape. |
 
    Append `...` to a final placeholder token to match one or more repeated

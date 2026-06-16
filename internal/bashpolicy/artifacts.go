@@ -218,9 +218,25 @@ func wholeTokenPlaceholderMatches(placeholder string, identityToken string) bool
 		return isInteger(identityToken)
 	case "<fields>":
 		return looksFieldList(identityToken)
+	case "<pattern>":
+		return commandShapePatternMatches(identityToken)
 	default:
 		return false
 	}
+}
+
+func commandShapePatternMatches(value string) bool {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "", "-", "<redacted>":
+		return false
+	case "<fields>", "<number>", "<safe-path>":
+		return true
+	}
+	return !strings.HasPrefix(value, "-") &&
+		!isCommandShapePlaceholder(value) &&
+		!shellOperatorToken(value) &&
+		!LooksSensitive(value)
 }
 
 func embeddedPlaceholderTokenMatches(ruleToken string, identityToken string) bool {
@@ -430,13 +446,27 @@ func BuildCandidates(provider string, permissions []string, policy *Policy, even
 }
 
 func eventCommandShapeIdentities(event Event, safeRoots []string) []string {
+	shapeIdentities := storedCommandShapeIdentities(event.CommandShape)
 	if len(safeRoots) > 0 {
 		identities := usableCommandShapeIdentities(commandShapeLeavesForCommand(event.Summary, safeRoots[0], safeRoots))
-		if len(identities) > 0 {
+		if len(identities) == 1 {
 			return identities
 		}
+		if len(identities) > 1 {
+			// A dry-run summary is display text. If quotes were lost, the shell
+			// parser can over-split one regex token such as a|b into pipeline
+			// leaves; the stored command-shape tokenizer does not treat that
+			// token as shell syntax, so prefer the stored shape here. Older
+			// logs can lack command_shape; in that case fail closed by emitting
+			// no candidate rather than suggesting fragmented policy rules.
+			return shapeIdentities
+		}
 	}
-	identity := strings.TrimSpace(event.CommandShape)
+	return shapeIdentities
+}
+
+func storedCommandShapeIdentities(commandShape string) []string {
+	identity := strings.TrimSpace(commandShape)
 	if !commandShapeIdentityUsable(identity) {
 		return nil
 	}
