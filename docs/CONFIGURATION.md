@@ -83,12 +83,14 @@ exists, pass `--policy-artifact-root` explicitly.
    bash-policy export --provider claude --policy-artifact-root /abs/project --claude-settings .claude/settings.json
    ```
 
-   Export combines dry-run command shapes with unresolved broad `Bash(...)`
-   permission families from Claude settings.
+   Export writes `.bash-policy-candidates.yaml`, combining dry-run command
+   shapes with unresolved broad `Bash(...)` permission families from Claude
+   settings.
 
-5. Copy only accepted runtime `command-shape` candidates into
-   `.bash-policy.yaml`, and give each one a `decision: allow`, `decision: deny`,
-   or `decision: manual`:
+5. Curate `.bash-policy.yaml` from `.bash-policy-candidates.yaml`. Asking an
+   agent to review the candidates and draft the curated policy is a good fit;
+   keep only accepted runtime `command-shape` candidates and give each one a
+   `decision: allow`, `decision: deny`, or `decision: manual`:
 
    ```yaml
    rules:
