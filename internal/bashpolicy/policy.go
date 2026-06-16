@@ -10,7 +10,7 @@
 //   - rtk: unwrap and evaluate the wrapped command; rtk proxy is denied.
 //   - git: allow only modeled read-only subcommands and safe path forms.
 //   - rg: allow modeled read-only ripgrep searches.
-//   - printenv/env: always deny environment dumps.
+//   - printenv/env: deny environment dumps; evaluate safe env launchers.
 //
 // Hardcoded read-only git subcommands:
 //   - status
@@ -280,11 +280,13 @@ func (ev evaluator) evalArgv(argv []string, cwd string) Result {
 	switch argv[0] {
 	case "rtk":
 		res = ev.evalRTK(argv, cwd)
+	case "env":
+		res = ev.evalEnv(argv, cwd)
 	case "git":
 		res = ev.evalGit(argv[1:], cwd, argv)
 	case "rg":
 		res = ev.evalRG(argv[1:], cwd, argv)
-	case "printenv", "env":
+	case "printenv":
 		res = result(DecisionDeny, "environment dump commands are not safe", argv)
 	default:
 		if readOnlyResult, ok := ev.evalReadOnlyUnix(argv, cwd); ok {
@@ -301,8 +303,10 @@ func (ev evaluator) evalSafetyFloor(argv []string, cwd string) Result {
 		return Result{}
 	}
 	switch argv[0] {
-	case "printenv", "env":
+	case "printenv":
 		return result(DecisionDeny, "environment dump commands are not safe", argv)
+	case "env":
+		return ev.evalEnvSafetyFloor(argv[1:], cwd, argv)
 	case "bash", "sh", "zsh", "fish":
 		return result(DecisionManual, "shell wrapper commands are not auto-allowed", argv)
 	case "rtk":
@@ -318,8 +322,8 @@ func (ev evaluator) evalSafetyFloor(argv []string, cwd string) Result {
 		if !ok {
 			return result(DecisionManual, "git -C path is outside the safe roots", argv)
 		}
-		if len(rest) > 0 && gitSubcommandIsDestructive(rest[0], rest[1:]) {
-			return result(DecisionDeny, "destructive git command is not safe", argv)
+		if len(rest) > 0 && ev.gitSubcommandIsDestructive(rest[0], rest[1:], nextCWD) {
+			return result(DecisionDeny, "non-reversible git command is not safe", argv)
 		}
 		if argvHasSensitiveValue(rest) {
 			return result(DecisionDeny, "git path targets a credential or secret location", argv)
@@ -419,6 +423,108 @@ func evalGrepSafetyFloor(args []string, original []string) Result {
 		}
 	}
 	return Result{}
+}
+
+func (ev evaluator) evalEnvSafetyFloor(args []string, cwd string, original []string) Result {
+	_, wrapped, res, ok := parseEnvLauncher(args, original)
+	if res.Decision != "" || !ok {
+		return res
+	}
+	return ev.evalSafetyFloor(wrapped, cwd)
+}
+
+func (ev evaluator) evalEnv(argv []string, cwd string) Result {
+	assignments, wrapped, res, ok := parseEnvLauncher(argv[1:], argv)
+	if res.Decision != "" || !ok {
+		return res
+	}
+	wrappedResult := ev.evalArgv(wrapped, cwd)
+	wrappedResult.CommandFamily = "env"
+	if wrappedResult.Summary != "" {
+		wrappedResult.Summary = redactedSummary(append(append([]string{"env"}, assignments...), wrapped...))
+	}
+	if wrappedResult.Decision == DecisionAllow {
+		wrappedResult.Reason = "env launcher around " + wrappedResult.Reason
+	}
+	return wrappedResult
+}
+
+func parseEnvLauncher(args []string, original []string) ([]string, []string, Result, bool) {
+	if len(args) == 0 {
+		return nil, nil, result(DecisionDeny, "environment dump commands are not safe", original), false
+	}
+	assignments := []string{}
+	for len(args) > 0 {
+		name, value, ok := envAssignment(args[0])
+		if !ok {
+			break
+		}
+		if LooksSensitive(name) || LooksSensitive(value) {
+			return assignments, nil, result(DecisionDeny, "env assignment looks credential-related", original), false
+		}
+		if dangerousEnvLauncherAssignment(name) {
+			return assignments, nil, result(DecisionDeny, "env assignment can alter command loading or configuration", original), false
+		}
+		if !safeEnvLauncherAssignment(name) {
+			return assignments, nil, result(DecisionManual, "env assignment is not in the safe launcher profile", original), false
+		}
+		assignments = append(assignments, args[0])
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		return assignments, nil, result(DecisionDeny, "environment dump commands are not safe", original), false
+	}
+	if strings.HasPrefix(args[0], "-") {
+		return assignments, nil, result(DecisionManual, "env options are not in the safe launcher profile", original), false
+	}
+	return assignments, args, Result{}, true
+}
+
+func envAssignment(arg string) (string, string, bool) {
+	name, value, ok := strings.Cut(arg, "=")
+	if !ok || !validEnvName(name) {
+		return "", "", false
+	}
+	return name, value, true
+}
+
+func validEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r == '_':
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func safeEnvLauncherAssignment(name string) bool {
+	switch name {
+	case "GOCACHE", "GOMODCACHE":
+		return true
+	default:
+		return false
+	}
+}
+
+func dangerousEnvLauncherAssignment(name string) bool {
+	switch name {
+	case "PATH", "IFS",
+		"LD_AUDIT", "LD_LIBRARY_PATH", "LD_PRELOAD",
+		"DYLD_FRAMEWORK_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+		"BASH_ENV", "ENV",
+		"GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_SSH_COMMAND":
+		return true
+	default:
+		return false
+	}
 }
 
 func (ev evaluator) evalRTK(argv []string, cwd string) Result {
@@ -744,6 +850,13 @@ func (ev evaluator) policyCommandShape(argv []string, cwd string) string {
 	}
 	if len(argv) > 1 && argv[0] == "rtk" {
 		argv = argv[1:]
+	}
+	if len(argv) > 0 && argv[0] == "env" {
+		_, wrapped, res, ok := parseEnvLauncher(argv[1:], argv)
+		if res.Decision != "" || !ok {
+			return ""
+		}
+		argv = wrapped
 	}
 	return ev.commandShape(argv, cwd)
 }
@@ -1250,8 +1363,8 @@ func (ev evaluator) evalGit(args []string, cwd string, original []string) Result
 	subcommand := args[0]
 	rest := args[1:]
 
-	if gitSubcommandIsDestructive(subcommand, rest) {
-		return result(DecisionDeny, "destructive git command is not safe", original)
+	if ev.gitSubcommandIsDestructive(subcommand, rest, cwd) {
+		return result(DecisionDeny, "non-reversible git command is not safe", original)
 	}
 	if argvHasSensitiveValue(rest) {
 		return result(DecisionDeny, "git path targets a credential or secret location", original)
@@ -1302,11 +1415,6 @@ func (ev evaluator) evalGitDiff(args []string, cwd string, original []string) Re
 }
 
 func (ev evaluator) evalGitBranch(args []string, original []string) Result {
-	for _, arg := range args {
-		if arg == "-D" || arg == "-d" || arg == "-m" || arg == "-M" || arg == "--delete" || arg == "--move" {
-			return result(DecisionDeny, "destructive git branch command is not safe", original)
-		}
-	}
 	return allowIfOnly(args, original, "read-only git branch", "--show-current", "--list", "-a", "-r")
 }
 
@@ -1511,22 +1619,143 @@ func allowIfOnly(args []string, original []string, reason string, allowed ...str
 	return result(DecisionAllow, reason, original)
 }
 
-func gitSubcommandIsDestructive(subcommand string, args []string) bool {
+func (ev evaluator) gitSubcommandIsDestructive(subcommand string, args []string, cwd string) bool {
 	switch subcommand {
-	case "push", "reset", "clean", "commit", "merge", "rebase", "checkout", "switch", "restore", "add", "rm", "mv", "tag":
-		return true
-	case "branch":
-		for _, arg := range args {
-			if arg == "-D" || arg == "-d" || arg == "--delete" || arg == "-m" || arg == "-M" || arg == "--move" {
-				return true
-			}
+	case "push":
+		return gitPushDeletesOrForces(args)
+	case "reset":
+		return gitResetDiscardsWorktree(args)
+	case "clean":
+		return !gitHasDryRun(args)
+	case "restore":
+		return gitRestoreDiscardsWorktree(args)
+	case "checkout":
+		return ev.gitCheckoutDiscardsWorktree(args, cwd)
+	case "switch":
+		return gitSwitchDiscardsWorktree(args)
+	case "rm":
+		return gitRMDiscardsWorktree(args)
+	}
+	return false
+}
+
+func gitPushDeletesOrForces(args []string) bool {
+	if gitHasDryRun(args) {
+		return false
+	}
+	for _, arg := range args {
+		if arg == "--force" || arg == "--force-with-lease" || strings.HasPrefix(arg, "--force-with-lease=") ||
+			arg == "--force-if-includes" || arg == "--delete" || arg == "--mirror" || arg == "--prune" {
+			return true
 		}
-	case "remote":
-		if len(args) > 0 && (args[0] == "add" || args[0] == "remove" || args[0] == "rm" || args[0] == "set-url" || args[0] == "rename") {
+		if shortGitFlagContainsAny(arg, "df") {
+			return true
+		}
+		if strings.HasPrefix(arg, "+") || strings.HasPrefix(arg, ":") {
 			return true
 		}
 	}
 	return false
+}
+
+func gitResetDiscardsWorktree(args []string) bool {
+	for _, arg := range args {
+		if arg == "--hard" || arg == "--merge" {
+			return true
+		}
+	}
+	return false
+}
+
+func gitRestoreDiscardsWorktree(args []string) bool {
+	staged := false
+	worktree := false
+	for _, arg := range args {
+		if arg == "--staged" || shortGitFlagContainsAny(arg, "S") {
+			staged = true
+		}
+		if arg == "--worktree" || shortGitFlagContainsAny(arg, "W") {
+			worktree = true
+		}
+	}
+	return worktree || !staged
+}
+
+func (ev evaluator) gitCheckoutDiscardsWorktree(args []string, cwd string) bool {
+	positionals := []string{}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			return len(args) > i+1
+		}
+		if arg == "--force" || arg == "--pathspec-from-file" || strings.HasPrefix(arg, "--pathspec-from-file=") ||
+			shortGitFlagContainsAny(arg, "f") {
+			return true
+		}
+		if strings.HasPrefix(arg, "-") {
+			if gitCheckoutFlagNeedsValue(arg) {
+				i++
+			}
+			continue
+		}
+		positionals = append(positionals, arg)
+	}
+	if len(positionals) > 1 {
+		return true
+	}
+	return len(positionals) == 1 && ev.gitCheckoutOperandLooksPathspec(positionals[0], cwd)
+}
+
+func gitCheckoutFlagNeedsValue(arg string) bool {
+	switch arg {
+	case "-b", "-B", "--orphan", "--conflict":
+		return true
+	default:
+		return false
+	}
+}
+
+func (ev evaluator) gitCheckoutOperandLooksPathspec(arg string, cwd string) bool {
+	if arg == "" || arg == "-" {
+		return false
+	}
+	return arg == "." ||
+		strings.HasPrefix(arg, "./") ||
+		strings.HasPrefix(arg, "../") ||
+		strings.HasPrefix(arg, "/") ||
+		strings.HasPrefix(arg, "~") ||
+		ev.safeExistingPath(arg, cwd)
+}
+
+func gitSwitchDiscardsWorktree(args []string) bool {
+	for _, arg := range args {
+		if arg == "--force" || arg == "--discard-changes" || shortGitFlagContainsAny(arg, "f") {
+			return true
+		}
+	}
+	return false
+}
+
+func gitRMDiscardsWorktree(args []string) bool {
+	for _, arg := range args {
+		if arg == "--force" || shortGitFlagContainsAny(arg, "f") {
+			return true
+		}
+	}
+	return false
+}
+
+func gitHasDryRun(args []string) bool {
+	for _, arg := range args {
+		if arg == "--dry-run" || shortGitFlagContainsAny(arg, "n") {
+			return true
+		}
+	}
+	return false
+}
+
+func shortGitFlagContainsAny(arg string, flags string) bool {
+	return strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && len(arg) > 1 && strings.ContainsAny(arg[1:], flags)
 }
 
 func literalArgs(words []*syntax.Word) ([]string, bool) {

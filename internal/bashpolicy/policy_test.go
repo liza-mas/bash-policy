@@ -67,6 +67,7 @@ func TestEvaluateAllowsSafeReadOnlyUnixForms(t *testing.T) {
 		"uniq README.md",
 		"wc -l README.md",
 		"which git",
+		"env GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod sort README.md",
 		"rtk sort README.md",
 	}
 
@@ -350,16 +351,58 @@ func TestGrepCommandShapeCoversPatternEdgeCases(t *testing.T) {
 
 func TestEvaluateRejectsUnsafeCommandShapes(t *testing.T) {
 	root := t.TempDir()
+	readme := filepath.Join(root, "README.md")
+	if err := os.WriteFile(readme, []byte("readme\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name    string
 		command string
 		want    Decision
 	}{
-		{name: "branch delete", command: "git branch -D topic", want: DecisionDeny},
-		{name: "remote add", command: "git remote add origin https://example.invalid/repo.git", want: DecisionDeny},
+		{name: "commit is manual", command: "git commit -m checkpoint", want: DecisionManual},
+		{name: "branch delete is manual", command: "git branch -D topic", want: DecisionManual},
+		{name: "branch move is manual", command: "git branch -m old new", want: DecisionManual},
+		{name: "remote add is manual", command: "git remote add origin https://example.invalid/repo.git", want: DecisionManual},
+		{name: "remote remove is manual", command: "git remote remove origin", want: DecisionManual},
+		{name: "checkout branch is manual", command: "git checkout main", want: DecisionManual},
+		{name: "checkout existing path is denied", command: "git checkout README.md", want: DecisionDeny},
+		{name: "checkout pathspec is denied", command: "git checkout -- README.md", want: DecisionDeny},
+		{name: "checkout force is denied", command: "git checkout -f main", want: DecisionDeny},
+		{name: "switch branch is manual", command: "git switch main", want: DecisionManual},
+		{name: "switch discard changes is denied", command: "git switch --discard-changes main", want: DecisionDeny},
+		{name: "switch force is denied", command: "git switch -f main", want: DecisionDeny},
+		{name: "restore worktree path is denied", command: "git restore README.md", want: DecisionDeny},
+		{name: "restore staged only is manual", command: "git restore --staged README.md", want: DecisionManual},
+		{name: "restore staged and worktree is denied", command: "git restore --staged --worktree README.md", want: DecisionDeny},
+		{name: "rm regular is manual", command: "git rm README.md", want: DecisionManual},
+		{name: "rm force is denied", command: "git rm -f README.md", want: DecisionDeny},
+		{name: "push is manual", command: "git push origin HEAD", want: DecisionManual},
+		{name: "push force dry-run is manual", command: "git push --dry-run --force origin HEAD", want: DecisionManual},
+		{name: "push force is denied", command: "git push --force origin HEAD", want: DecisionDeny},
+		{name: "push force with lease value is denied", command: "git push --force-with-lease=main origin HEAD", want: DecisionDeny},
+		{name: "push force short cluster is denied", command: "git push -fu origin HEAD", want: DecisionDeny},
+		{name: "push force refspec is denied", command: "git push origin +HEAD:main", want: DecisionDeny},
+		{name: "push delete flag is denied", command: "git push origin --delete topic", want: DecisionDeny},
+		{name: "push delete short flag is denied", command: "git push -d origin topic", want: DecisionDeny},
+		{name: "push delete refspec is denied", command: "git push origin :topic", want: DecisionDeny},
+		{name: "push mirror is denied", command: "git push --mirror origin", want: DecisionDeny},
+		{name: "push prune is denied", command: "git push --prune origin", want: DecisionDeny},
+		{name: "reset soft is manual", command: "git reset --soft HEAD~1", want: DecisionManual},
 		{name: "reset hard", command: "git reset --hard", want: DecisionDeny},
+		{name: "reset merge", command: "git reset --merge", want: DecisionDeny},
+		{name: "clean dry run is manual", command: "git clean -n", want: DecisionManual},
+		{name: "clean dry run cluster is manual", command: "git clean -nf", want: DecisionManual},
+		{name: "clean without dry run is denied", command: "git clean -fd", want: DecisionDeny},
 		{name: "printenv", command: "printenv", want: DecisionDeny},
+		{name: "env dump", command: "env", want: DecisionDeny},
+		{name: "env launcher unknown command", command: "env GOCACHE=/tmp/go-build pre-commit run --files internal/bashpolicy/policy.go", want: DecisionManual},
+		{name: "env option", command: "env -i git status", want: DecisionManual},
+		{name: "env unknown assignment", command: "env FOO=bar git status", want: DecisionManual},
+		{name: "env path assignment", command: "env PATH=/tmp git status", want: DecisionDeny},
+		{name: "env loader assignment", command: "env LD_PRELOAD=/tmp/libpreload.so git status", want: DecisionDeny},
+		{name: "env sensitive assignment", command: "env TOKEN=abc git status", want: DecisionDeny},
 		{name: "credential path", command: "cat .env", want: DecisionDeny},
 		{name: "git show ssh key object path", command: "git show HEAD:id_rsa", want: DecisionDeny},
 		{name: "git show nested ssh key object path", command: "git show HEAD:config/id_rsa", want: DecisionDeny},
@@ -398,10 +441,26 @@ func TestEvaluateRejectsUnsafeCommandShapes(t *testing.T) {
 
 func TestEvaluateProjectPolicyRulesAfterSafetyFloor(t *testing.T) {
 	root := t.TempDir()
+	readme := filepath.Join(root, "README.md")
+	if err := os.WriteFile(readme, []byte("readme\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	policy := &Policy{Rules: []PolicyRule{
 		{Kind: "command-shape", Identity: "gh pr view <number>", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "pre-commit run --files <safe-path> <safe-path>", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "git diff --cached <safe-path>...", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "git commit -m checkpoint", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "git branch -D topic", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "git remote remove origin", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "git checkout -- <safe-path>", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "git restore README.md", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "git restore --staged README.md", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "git switch --discard-changes main", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "git rm -f README.md", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "git push origin HEAD", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "git push --force origin HEAD", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "git reset --hard", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "git reset --merge", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "rg --pre TODO", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "grep -HRefunc <pattern>", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "grep -- <pattern> <safe-path>", Decision: DecisionAllow},
@@ -427,6 +486,17 @@ func TestEvaluateProjectPolicyRulesAfterSafetyFloor(t *testing.T) {
 		t.Fatalf("configured rtk command shape = %q, want unwrapped normalized shape", rtkAllowed.CommandShape)
 	}
 
+	envAllowed := Evaluate(Request{Command: "env GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod pre-commit run --files internal/bashpolicy/policy.go internal/bashpolicy/policy_test.go", ProjectRoot: root, Policy: policy})
+	if envAllowed.Decision != DecisionAllow {
+		t.Fatalf("configured env launcher decision = %s, want allow; result=%+v", envAllowed.Decision, envAllowed)
+	}
+	if envAllowed.CommandFamily != "env" {
+		t.Fatalf("configured env launcher family = %q, want env; result=%+v", envAllowed.CommandFamily, envAllowed)
+	}
+	if envAllowed.CommandShape != "pre-commit run --files <safe-path> <safe-path>" {
+		t.Fatalf("configured env launcher shape = %q, want wrapped command shape", envAllowed.CommandShape)
+	}
+
 	singlePath := Evaluate(Request{Command: "git diff --cached internal/policy.go", ProjectRoot: root, Policy: policy})
 	if singlePath.Decision != DecisionAllow {
 		t.Fatalf("configured variadic git decision = %s, want allow; result=%+v", singlePath.Decision, singlePath)
@@ -441,6 +511,54 @@ func TestEvaluateProjectPolicyRulesAfterSafetyFloor(t *testing.T) {
 	}
 	if multiPath.CommandShape != "git diff --cached <safe-path> <safe-path>" {
 		t.Fatalf("configured variadic multi-path command shape = %q, want normalized concrete shape", multiPath.CommandShape)
+	}
+
+	commit := Evaluate(Request{Command: "git commit -m checkpoint", ProjectRoot: root, Policy: policy})
+	if commit.Decision != DecisionAllow {
+		t.Fatalf("configured git commit decision = %s, want allow; result=%+v", commit.Decision, commit)
+	}
+
+	branchDelete := Evaluate(Request{Command: "git branch -D topic", ProjectRoot: root, Policy: policy})
+	if branchDelete.Decision != DecisionAllow {
+		t.Fatalf("configured git branch delete decision = %s, want allow; result=%+v", branchDelete.Decision, branchDelete)
+	}
+
+	remoteRemove := Evaluate(Request{Command: "git remote remove origin", ProjectRoot: root, Policy: policy})
+	if remoteRemove.Decision != DecisionAllow {
+		t.Fatalf("configured git remote remove decision = %s, want allow; result=%+v", remoteRemove.Decision, remoteRemove)
+	}
+
+	restoreStaged := Evaluate(Request{Command: "git restore --staged README.md", ProjectRoot: root, Policy: policy})
+	if restoreStaged.Decision != DecisionAllow {
+		t.Fatalf("configured git restore --staged decision = %s, want allow; result=%+v", restoreStaged.Decision, restoreStaged)
+	}
+
+	push := Evaluate(Request{Command: "git push origin HEAD", ProjectRoot: root, Policy: policy})
+	if push.Decision != DecisionAllow {
+		t.Fatalf("configured git push decision = %s, want allow; result=%+v", push.Decision, push)
+	}
+
+	for _, tt := range []struct {
+		name    string
+		command string
+	}{
+		{name: "checkout pathspec", command: "git checkout -- README.md"},
+		{name: "restore worktree", command: "git restore README.md"},
+		{name: "switch discard changes", command: "git switch --discard-changes main"},
+		{name: "rm force", command: "git rm -f README.md"},
+		{name: "reset merge", command: "git reset --merge"},
+	} {
+		t.Run("configured non-overridable "+tt.name, func(t *testing.T) {
+			got := Evaluate(Request{Command: tt.command, ProjectRoot: root, Policy: policy})
+			if got.Decision != DecisionDeny {
+				t.Fatalf("decision = %s, want deny; result=%+v", got.Decision, got)
+			}
+		})
+	}
+
+	forcePush := Evaluate(Request{Command: "git push --force origin HEAD", ProjectRoot: root, Policy: policy})
+	if forcePush.Decision != DecisionDeny {
+		t.Fatalf("force push policy decision = %s, want deny; result=%+v", forcePush.Decision, forcePush)
 	}
 
 	destructive := Evaluate(Request{Command: "git reset --hard", ProjectRoot: root, Policy: policy})
