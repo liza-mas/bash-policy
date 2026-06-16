@@ -456,9 +456,14 @@ func eventCommandShapeIdentities(event Event, safeRoots []string) []string {
 			// A dry-run summary is display text. If quotes were lost, the shell
 			// parser can over-split one regex token such as a|b into pipeline
 			// leaves; the stored command-shape tokenizer does not treat that
-			// token as shell syntax, so prefer the stored shape here. Older
-			// logs can lack command_shape; in that case fail closed by emitting
-			// no candidate rather than suggesting fragmented policy rules.
+			// token as shell syntax. Genuine compound commands should split the
+			// same way in both forms, so leaf-count agreement is the accepted
+			// proxy for re-normalizing from summary. Older logs can lack
+			// command_shape; in that case fail closed by emitting no candidate
+			// rather than suggesting fragmented policy rules.
+			if len(shapeIdentities) == len(identities) {
+				return identities
+			}
 			return shapeIdentities
 		}
 	}

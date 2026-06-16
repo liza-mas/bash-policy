@@ -736,37 +736,263 @@ func (ev evaluator) commandShape(argv []string, cwd string) string {
 	if len(argv) == 0 {
 		return ""
 	}
-	isGitCommand := argv[0] == "git"
+	switch argv[0] {
+	case "git":
+		return ev.gitCommandShape(argv, cwd)
+	case "rg":
+		return ev.rgCommandShape(argv, cwd)
+	case "cd":
+		if len(argv) == 2 {
+			return strings.Join([]string{argv[0], ev.renderCommandShapeArg(argv[1], cwd, true)}, " ")
+		}
+	default:
+		if profile, ok := readOnlyUnixProfiles[argv[0]]; ok && profile.operandsArePaths {
+			return ev.pathOperandUnixCommandShape(argv, cwd, profile)
+		}
+	}
+	return ev.genericCommandShape(argv, cwd)
+}
+
+func (ev evaluator) genericCommandShape(argv []string, cwd string) string {
+	if len(argv) == 0 {
+		return ""
+	}
 	out := make([]string, 0, len(argv))
 	afterDashDash := false
 	for _, arg := range argv {
-		if isGitCommand {
-			if objectPath, ok := gitObjectPathOperand(arg); ok {
-				if gitObjectPathPathSensitive(objectPath) {
-					out = append(out, "<redacted>")
-				} else {
-					out = append(out, renderCommandShapeToken(arg))
-				}
-				continue
-			}
-		}
-		switch {
-		case arg == "--":
+		if arg == "--" {
 			afterDashDash = true
 			out = append(out, arg)
-		case (afterDashDash || argLooksPathLike(arg)) && ev.safePath(arg, cwd):
-			out = append(out, "<safe-path>")
-		case isInteger(arg):
-			out = append(out, "<number>")
-		case looksFieldList(arg):
-			out = append(out, "<fields>")
-		case LooksSensitive(arg):
-			out = append(out, "<redacted>")
-		default:
-			out = append(out, renderCommandShapeToken(arg))
+			continue
 		}
+		out = append(out, ev.renderCommandShapeArg(arg, cwd, afterDashDash || argLooksPathLike(arg)))
 	}
 	return strings.Join(out, " ")
+}
+
+func (ev evaluator) pathOperandUnixCommandShape(argv []string, cwd string, profile readOnlyUnixProfile) string {
+	out := make([]string, 0, len(argv))
+	out = append(out, argv[0])
+	afterDashDash := false
+	for i := 1; i < len(argv); i++ {
+		arg := argv[i]
+		if arg == "--" && !afterDashDash {
+			afterDashDash = true
+			out = append(out, arg)
+			continue
+		}
+		if !afterDashDash && strings.HasPrefix(arg, "-") && arg != "-" {
+			out = append(out, ev.renderCommandShapeArg(arg, cwd, false))
+			if profile.valueFlags[arg] {
+				i++
+				if i < len(argv) {
+					out = append(out, ev.renderCommandShapeArg(argv[i], cwd, false))
+				}
+			}
+			continue
+		}
+		out = append(out, ev.renderCommandShapeArg(arg, cwd, true))
+	}
+	return strings.Join(out, " ")
+}
+
+func (ev evaluator) gitCommandShape(argv []string, cwd string) string {
+	out := []string{argv[0]}
+	args := argv[1:]
+	nextCWD := cwd
+	for len(args) >= 2 && args[0] == "-C" {
+		out = append(out, args[0])
+		if dir, ok := ev.safeDir(args[1], nextCWD); ok {
+			out = append(out, "<safe-path>")
+			nextCWD = dir
+		} else {
+			out = append(out, ev.renderCommandShapeArg(args[1], nextCWD, false))
+		}
+		args = args[2:]
+	}
+	if len(args) == 0 {
+		return strings.Join(out, " ")
+	}
+	subcommand := args[0]
+	out = append(out, subcommand)
+	rest := args[1:]
+	switch subcommand {
+	case "status", "check-ignore":
+		out = append(out, ev.pathspecCommandArgsShape(rest, nextCWD, gitFlagNeedsValueForShape, false)...)
+	case "diff":
+		out = append(out, ev.pathspecCommandArgsShape(rest, nextCWD, gitFlagNeedsValueForShape, true)...)
+	case "log", "show":
+		out = append(out, ev.gitLogShowCommandArgsShape(rest, nextCWD)...)
+	default:
+		out = append(out, ev.genericCommandShapeArgs(rest, nextCWD)...)
+	}
+	return strings.Join(out, " ")
+}
+
+func (ev evaluator) pathspecCommandArgsShape(args []string, cwd string, flagNeedsValue func(string) bool, ambiguousBareArgs bool) []string {
+	out := make([]string, 0, len(args))
+	afterDashDash := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" && !afterDashDash {
+			afterDashDash = true
+			out = append(out, arg)
+			continue
+		}
+		if !afterDashDash && strings.HasPrefix(arg, "-") && arg != "-" {
+			out = append(out, ev.renderCommandShapeArg(arg, cwd, false))
+			if flagNeedsValue(arg) {
+				i++
+				if i < len(args) {
+					out = append(out, ev.renderCommandShapeArg(args[i], cwd, false))
+				}
+			}
+			continue
+		}
+		if afterDashDash || !ambiguousBareArgs {
+			out = append(out, ev.renderCommandShapeArg(arg, cwd, true))
+		} else {
+			out = append(out, ev.renderAmbiguousPathspecArg(arg, cwd))
+		}
+	}
+	return out
+}
+
+func gitFlagNeedsValueForShape(arg string) bool {
+	switch arg {
+	case "-C", "-U", "--unified", "--inter-hunk-context", "--output",
+		"--relative", "--src-prefix", "--dst-prefix", "--word-diff-regex",
+		"--color-moved-ws", "--diff-filter", "-G", "-S", "-O",
+		"--exclude", "--exclude-from", "--exclude-per-directory":
+		return true
+	default:
+		return false
+	}
+}
+
+func (ev evaluator) gitLogShowCommandArgsShape(args []string, cwd string) []string {
+	out := make([]string, 0, len(args))
+	afterDashDash := false
+	for _, arg := range args {
+		if arg == "--" && !afterDashDash {
+			afterDashDash = true
+			out = append(out, arg)
+			continue
+		}
+		if afterDashDash {
+			out = append(out, ev.renderCommandShapeArg(arg, cwd, true))
+			continue
+		}
+		if objectPath, ok := gitObjectPathOperand(arg); ok {
+			if gitObjectPathPathSensitive(objectPath) {
+				out = append(out, "<redacted>")
+			} else {
+				out = append(out, renderCommandShapeToken(arg))
+			}
+			continue
+		}
+		out = append(out, ev.renderCommandShapeArg(arg, cwd, argLooksPathLike(arg)))
+	}
+	return out
+}
+
+func (ev evaluator) rgCommandShape(argv []string, cwd string) string {
+	out := []string{argv[0]}
+	filesMode := false
+	patternSeen := false
+	for i := 1; i < len(argv); i++ {
+		arg := argv[i]
+		if arg == "--" {
+			out = append(out, arg)
+			for _, pathArg := range argv[i+1:] {
+				out = append(out, ev.renderCommandShapeArg(pathArg, cwd, true))
+			}
+			return strings.Join(out, " ")
+		}
+		if arg == "--files" {
+			filesMode = true
+			out = append(out, arg)
+			continue
+		}
+		if strings.HasPrefix(arg, "-") && arg != "-" {
+			out = append(out, ev.renderCommandShapeArg(arg, cwd, false))
+			if rgInlinePatternFlag(arg) {
+				patternSeen = true
+			}
+			if rgFlagNeedsValue(arg) {
+				i++
+				if i < len(argv) {
+					out = append(out, ev.renderCommandShapeArg(argv[i], cwd, false))
+					if rgPatternValueFlag(arg) {
+						patternSeen = true
+					}
+				}
+			}
+			continue
+		}
+		if !filesMode && !patternSeen {
+			patternSeen = true
+			out = append(out, ev.renderCommandShapeArg(arg, cwd, false))
+			continue
+		}
+		out = append(out, ev.renderCommandShapeArg(arg, cwd, true))
+	}
+	return strings.Join(out, " ")
+}
+
+func rgPatternValueFlag(arg string) bool {
+	return arg == "--regexp" || arg == "-e"
+}
+
+func rgInlinePatternFlag(arg string) bool {
+	return strings.HasPrefix(arg, "--regexp=") || strings.HasPrefix(arg, "-e=")
+}
+
+func (ev evaluator) genericCommandShapeArgs(args []string, cwd string) []string {
+	out := make([]string, 0, len(args))
+	afterDashDash := false
+	for _, arg := range args {
+		if arg == "--" {
+			afterDashDash = true
+			out = append(out, arg)
+			continue
+		}
+		out = append(out, ev.renderCommandShapeArg(arg, cwd, afterDashDash || argLooksPathLike(arg)))
+	}
+	return out
+}
+
+func (ev evaluator) renderCommandShapeArg(arg string, cwd string, pathOperand bool) string {
+	switch {
+	case pathOperand && ev.safePath(arg, cwd):
+		return "<safe-path>"
+	case isInteger(arg):
+		return "<number>"
+	case looksFieldList(arg):
+		return "<fields>"
+	case LooksSensitive(arg):
+		return "<redacted>"
+	default:
+		return renderCommandShapeToken(arg)
+	}
+}
+
+func (ev evaluator) renderAmbiguousPathspecArg(arg string, cwd string) string {
+	if ev.safePath(arg, cwd) && (argLooksPathLike(arg) || ev.safeExistingPath(arg, cwd)) {
+		return "<safe-path>"
+	}
+	return ev.renderCommandShapeArg(arg, cwd, false)
+}
+
+func (ev evaluator) safeExistingPath(path string, cwd string) bool {
+	if unsafePathPattern(path) || LooksSensitive(path) {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(absFrom(path, cwd))
+	if err != nil {
+		return false
+	}
+	return ev.insideAnyRoot(filepath.Clean(resolved))
 }
 
 func renderCommandShapeToken(value string) string {

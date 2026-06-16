@@ -259,6 +259,40 @@ func TestBuiltInCoversFreeFormEchoShapesOnlyForEchoProfile(t *testing.T) {
 	}
 }
 
+func TestEvaluateNormalizesBareSafePathOperandsByCommandProfile(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"README.md", "OTHER.md", ".bash-policy-dry-run.jsonl"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("content\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		command string
+		want    string
+	}{
+		{command: "cat README.md", want: "cat <safe-path>"},
+		{command: "cat /etc/passwd", want: ""},
+		{command: "diff -u README.md OTHER.md", want: "diff -u <safe-path> <safe-path>"},
+		{command: "sort README.md", want: "sort <safe-path>"},
+		{command: "echo README.md", want: "echo README.md"},
+		{command: "rg TODO README.md", want: "rg TODO <safe-path>"},
+		{command: "git status --porcelain .bash-policy-dry-run.jsonl", want: "git status --porcelain <safe-path>"},
+		{command: "git check-ignore -v .bash-policy-dry-run.jsonl", want: "git check-ignore -v <safe-path>"},
+		{command: "git diff --cached README.md", want: "git diff --cached <safe-path>"},
+		{command: "git diff HEAD README.md", want: "git diff HEAD <safe-path>"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			result := Evaluate(Request{Command: tt.command, ProjectRoot: root})
+			if result.CommandShape != tt.want {
+				t.Fatalf("command shape = %q, want %q; result=%+v", result.CommandShape, tt.want, result)
+			}
+		})
+	}
+}
+
 func TestEvaluateRejectsUnsafeCommandShapes(t *testing.T) {
 	root := t.TempDir()
 
@@ -742,6 +776,68 @@ func TestBuildCandidatesFallsBackToCommandShapeForLossySummary(t *testing.T) {
 		if identity == unexpected {
 			t.Fatalf("candidate identity = %q, want no split regex fragment", identity)
 		}
+	}
+}
+
+func TestBuildCandidatesRenormalizesMatchingCompoundSummaryLeaves(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".bash-policy-dry-run.jsonl"), []byte("{}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	events := []Event{{
+		Provider:     "claude",
+		Decision:     DecisionManual,
+		Summary:      "git check-ignore -v .bash-policy-dry-run.jsonl || git status --porcelain .bash-policy-dry-run.jsonl",
+		CommandShape: "git check-ignore -v .bash-policy-dry-run.jsonl || git status --porcelain .bash-policy-dry-run.jsonl",
+	}}
+
+	candidates := BuildCandidates("claude", nil, nil, events, root)
+	got := map[string]bool{}
+	for _, candidate := range candidates.Candidates {
+		got[candidate.Identity] = true
+	}
+
+	for _, want := range []string{
+		"git check-ignore -v <safe-path>",
+		"git status --porcelain <safe-path>",
+	} {
+		if !got[want] {
+			t.Fatalf("missing candidate %q in %+v", want, candidates.Candidates)
+		}
+	}
+	for _, unexpected := range []string{
+		"git check-ignore -v .bash-policy-dry-run.jsonl",
+		"git status --porcelain .bash-policy-dry-run.jsonl",
+	} {
+		if got[unexpected] {
+			t.Fatalf("unexpected literal candidate %q in %+v", unexpected, candidates.Candidates)
+		}
+	}
+}
+
+func TestBuildCandidatesRenormalizesBarePathAfterSafeCD(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	events := []Event{{
+		Provider:     "claude",
+		Decision:     DecisionManual,
+		Summary:      "cd " + root + "; git diff --cached internal/bashpolicy/policy_test.go docs/CONFIGURATION.md README.md",
+		CommandShape: "cd <safe-path> ; git diff --cached <safe-path> <safe-path> README.md",
+	}}
+
+	candidates := BuildCandidates("claude", nil, nil, events, root)
+	got := map[string]bool{}
+	for _, candidate := range candidates.Candidates {
+		got[candidate.Identity] = true
+	}
+
+	if !got["git diff --cached <safe-path> <safe-path> <safe-path>"] {
+		t.Fatalf("missing normalized git diff candidate in %+v", candidates.Candidates)
+	}
+	if got["git diff --cached <safe-path> <safe-path> README.md"] {
+		t.Fatalf("unexpected literal README candidate in %+v", candidates.Candidates)
 	}
 }
 
