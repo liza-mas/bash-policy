@@ -261,10 +261,17 @@ func TestBuiltInCoversFreeFormEchoShapesOnlyForEchoProfile(t *testing.T) {
 
 func TestEvaluateNormalizesBareSafePathOperandsByCommandProfile(t *testing.T) {
 	root := t.TempDir()
-	for _, name := range []string{"README.md", "OTHER.md", ".bash-policy-dry-run.jsonl"} {
+	for _, name := range []string{"README.md", "OTHER.md", ".bash-policy-dry-run.jsonl", "patterns.txt"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte("content\n"), 0644); err != nil {
 			t.Fatal(err)
 		}
+	}
+	grepPath := filepath.Join(root, "internal", "bashpolicy", "policy.go")
+	if err := os.MkdirAll(filepath.Dir(grepPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(grepPath, []byte("package bashpolicy\n"), 0644); err != nil {
+		t.Fatal(err)
 	}
 
 	tests := []struct {
@@ -281,6 +288,17 @@ func TestEvaluateNormalizesBareSafePathOperandsByCommandProfile(t *testing.T) {
 		{command: "git check-ignore -v .bash-policy-dry-run.jsonl", want: "git check-ignore -v <safe-path>"},
 		{command: "git diff --cached README.md", want: "git diff --cached <safe-path>"},
 		{command: "git diff HEAD README.md", want: "git diff HEAD <safe-path>"},
+		{command: `grep -n "CommandRule\|policyCommandShape" internal/bashpolicy/policy.go`, want: "grep -n <pattern> <safe-path>"},
+		{command: `grep -nE 'func \(ev evaluator\)' internal/bashpolicy/policy.go`, want: "grep -nE <pattern> <safe-path>"},
+		{command: `grep -nF "genericCommandShape(" internal/bashpolicy/policy.go`, want: "grep -nF <pattern> <safe-path>"},
+		{command: "grep -rn TODO internal/bashpolicy", want: "grep -rn <pattern> <safe-path>"},
+		{command: "grep -e TODO internal/bashpolicy/policy.go", want: "grep -e <pattern> <safe-path>"},
+		{command: "grep --regexp TODO internal/bashpolicy/policy.go", want: "grep --regexp <pattern> <safe-path>"},
+		{command: "grep -eTODO internal/bashpolicy/policy.go", want: "grep -e<pattern> <safe-path>"},
+		{command: "grep --regexp=TODO internal/bashpolicy/policy.go", want: "grep --regexp=<pattern> <safe-path>"},
+		{command: "grep -f patterns.txt internal/bashpolicy/policy.go", want: "grep -f <safe-path> <safe-path>"},
+		{command: "grep --file=patterns.txt internal/bashpolicy/policy.go", want: "grep --file=<safe-path> <safe-path>"},
+		{command: "grep README.md internal/bashpolicy/policy.go", want: "grep <pattern> <safe-path>"},
 	}
 
 	for _, tt := range tests {
@@ -288,6 +306,43 @@ func TestEvaluateNormalizesBareSafePathOperandsByCommandProfile(t *testing.T) {
 			result := Evaluate(Request{Command: tt.command, ProjectRoot: root})
 			if result.CommandShape != tt.want {
 				t.Fatalf("command shape = %q, want %q; result=%+v", result.CommandShape, tt.want, result)
+			}
+		})
+	}
+}
+
+func TestGrepCommandShapeCoversPatternEdgeCases(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "internal", "bashpolicy", "policy.go")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("package bashpolicy\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ev := newEvaluator(Request{ProjectRoot: root})
+
+	tests := []struct {
+		name string
+		argv []string
+		want string
+	}{
+		{
+			name: "sensitive pattern",
+			argv: []string{"grep", "sk-live-abc123", "internal/bashpolicy/policy.go"},
+			want: "grep <redacted> <safe-path>",
+		},
+		{
+			name: "ambiguous embedded pattern cluster",
+			argv: []string{"grep", "-HRefunc", ".."},
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ev.commandShape(tt.argv, root)
+			if got != tt.want {
+				t.Fatalf("grep command shape = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -348,6 +403,9 @@ func TestEvaluateProjectPolicyRulesAfterSafetyFloor(t *testing.T) {
 		{Kind: "command-shape", Identity: "git diff --cached <safe-path>...", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "git reset --hard", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "rg --pre TODO", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "grep -HRefunc <pattern>", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "grep -- <pattern> <safe-path>", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "grep <redacted> <safe-path>", Decision: DecisionAllow},
 	}}
 
 	allowed := Evaluate(Request{Command: "gh pr view 123", ProjectRoot: root, Policy: policy})
@@ -393,6 +451,21 @@ func TestEvaluateProjectPolicyRulesAfterSafetyFloor(t *testing.T) {
 	rgExec := Evaluate(Request{Command: "rg --pre TODO", ProjectRoot: root, Policy: policy})
 	if rgExec.Decision != DecisionManual {
 		t.Fatalf("rg execution flag policy decision = %s, want manual; result=%+v", rgExec.Decision, rgExec)
+	}
+
+	grepEmbeddedPattern := Evaluate(Request{Command: "grep -HRefunc ..", ProjectRoot: root, Policy: policy})
+	if grepEmbeddedPattern.Decision != DecisionManual {
+		t.Fatalf("grep embedded pattern cluster decision = %s, want manual; result=%+v", grepEmbeddedPattern.Decision, grepEmbeddedPattern)
+	}
+
+	grepDashDashPattern := Evaluate(Request{Command: "grep -- -ne internal/bashpolicy/policy.go", ProjectRoot: root, Policy: policy})
+	if grepDashDashPattern.Decision != DecisionAllow {
+		t.Fatalf("grep -- pattern decision = %s, want allow; result=%+v", grepDashDashPattern.Decision, grepDashDashPattern)
+	}
+
+	grepSensitivePattern := Evaluate(Request{Command: "grep sk-live-abc123 internal/bashpolicy/policy.go", ProjectRoot: root, Policy: policy})
+	if grepSensitivePattern.Decision != DecisionDeny {
+		t.Fatalf("grep sensitive pattern decision = %s, want deny; result=%+v", grepSensitivePattern.Decision, grepSensitivePattern)
 	}
 }
 
@@ -486,7 +559,7 @@ func TestEvaluateBuildsCanonicalCompoundCommandShapes(t *testing.T) {
 	}
 
 	command := `git status --porcelain=v1 | grep -i bashpolicy; echo "---commands---"; git diff --cached internal/bashpolicy/policy.go`
-	wantShape := "git status --porcelain=v1 | grep -i bashpolicy ; echo ---commands--- ; git diff --cached <safe-path>"
+	wantShape := "git status --porcelain=v1 | grep -i <pattern> ; echo ---commands--- ; git diff --cached <safe-path>"
 
 	result := Evaluate(Request{Command: command, ProjectRoot: root})
 	if result.Decision != DecisionManual {
@@ -502,7 +575,7 @@ func TestEvaluateBuildsCanonicalCompoundCommandShapes(t *testing.T) {
 	policy := &Policy{Rules: []PolicyRule{
 		{
 			Kind:     "command-shape",
-			Identity: "grep -i bashpolicy",
+			Identity: "grep -i <pattern>",
 			Decision: DecisionAllow,
 		},
 		{
@@ -841,6 +914,46 @@ func TestBuildCandidatesRenormalizesBarePathAfterSafeCD(t *testing.T) {
 	}
 }
 
+func TestBuildCandidatesUsesCanonicalGrepPatternOperands(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "internal", "bashpolicy", "policy.go")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("package bashpolicy\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	events := []Event{{
+		Provider:     "claude",
+		Decision:     DecisionManual,
+		Summary:      `grep -nF "genericCommandShape(" internal/bashpolicy/policy.go; grep -nF "isGitCommand" internal/bashpolicy/policy.go`,
+		CommandShape: `grep -nF <pattern> <safe-path> ; grep -nF <pattern> <safe-path>`,
+	}}
+
+	candidates := BuildCandidates("claude", nil, nil, events, root)
+	got := map[string]Candidate{}
+	for _, candidate := range candidates.Candidates {
+		got[candidate.Identity] = candidate
+	}
+
+	candidate, ok := got["grep -nF <pattern> <safe-path>"]
+	if !ok {
+		t.Fatalf("missing normalized grep candidate in %+v", candidates.Candidates)
+	}
+	if candidate.Observations != 2 {
+		t.Fatalf("grep candidate observations = %d, want 2", candidate.Observations)
+	}
+	for _, unexpected := range []string{
+		"grep -nF genericCommandShape( <safe-path>",
+		"grep -nF isGitCommand <safe-path>",
+		"grep -nF <safe-path> <safe-path>",
+	} {
+		if _, ok := got[unexpected]; ok {
+			t.Fatalf("unexpected grep candidate %q in %+v", unexpected, candidates.Candidates)
+		}
+	}
+}
+
 func TestSanitizeSummaryPreservesQuotedWhitespace(t *testing.T) {
 	got := sanitizeSummary(` echo    'alpha  beta'    "sk-live-abc123"    "gamma  delta" `)
 	want := `echo 'alpha  beta' <redacted> "gamma  delta"`
@@ -957,7 +1070,7 @@ func TestDryRunCandidatesUseCanonicalCommandShapeIdentities(t *testing.T) {
 	if unresolvedCompound.Decision != DecisionManual {
 		t.Fatalf("unresolved compound decision = %s, want manual; result=%+v", unresolvedCompound.Decision, unresolvedCompound)
 	}
-	if unresolvedCompound.CommandShape != "git status | grep bashpolicy ; echo ok" {
+	if unresolvedCompound.CommandShape != "git status | grep <pattern> ; echo ok" {
 		t.Fatalf("unresolved compound command shape = %q, want canonical shell shape", unresolvedCompound.CommandShape)
 	}
 	if err := AppendDryRunEvent(root, "claude", ActivationDryRun, unresolvedCompound); err != nil {
@@ -966,7 +1079,7 @@ func TestDryRunCandidatesUseCanonicalCommandShapeIdentities(t *testing.T) {
 	if err := AppendDryRunEvent(root, "claude", ActivationDryRun, Result{
 		Decision:     DecisionManual,
 		Summary:      `echo "=== sensitive marker @ activation ==="; grep bashpolicy`,
-		CommandShape: `echo "=== <redacted> @ activation ===" ; grep bashpolicy`,
+		CommandShape: `echo "=== <redacted> @ activation ===" ; grep <pattern>`,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -987,7 +1100,7 @@ func TestDryRunCandidatesUseCanonicalCommandShapeIdentities(t *testing.T) {
 	if canonical.Observations != 2 {
 		t.Fatalf("canonical candidate observations = %d, want wrapped and unwrapped observations", canonical.Observations)
 	}
-	if _, ok := got["command-shape:grep bashpolicy"]; !ok {
+	if _, ok := got["command-shape:grep <pattern>"]; !ok {
 		t.Fatalf("missing unresolved compound leaf command-shape candidate: %+v", candidates.Candidates)
 	}
 	for _, unexpected := range []string{
@@ -999,7 +1112,7 @@ func TestDryRunCandidatesUseCanonicalCommandShapeIdentities(t *testing.T) {
 		`command-shape:echo "=== <redacted> @ activation ==="`,
 		"command-shape:git status; echo ok",
 		"command-shape:git status ; echo ok",
-		"command-shape:git status | grep bashpolicy ; echo ok",
+		"command-shape:git status | grep <pattern> ; echo ok",
 	} {
 		if _, ok := got[unexpected]; ok {
 			t.Fatalf("unexpected candidate %s in %+v", unexpected, candidates.Candidates)
