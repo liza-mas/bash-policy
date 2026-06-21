@@ -719,6 +719,146 @@ func TestEvaluateBuildsCanonicalCompoundCommandShapes(t *testing.T) {
 	}
 }
 
+func TestEvaluateAllowsCompoundLeavesFromClaudeAllowPermissions(t *testing.T) {
+	root := t.TempDir()
+	result := Evaluate(Request{
+		Command:                "gh pr view 123 | grep -i title; echo done",
+		ProjectRoot:            root,
+		ClaudeAllowPermissions: []string{"Bash(gh pr view:*)", "Bash(grep -i:*)"},
+	})
+	if result.Decision != DecisionAllow {
+		t.Fatalf("compound decision = %s, want allow; result=%+v", result.Decision, result)
+	}
+	wantShape := "gh pr view <number> | grep -i <pattern> ; echo done"
+	if result.CommandShape != wantShape {
+		t.Fatalf("compound command shape = %q, want %q", result.CommandShape, wantShape)
+	}
+
+	disallowedLeaf := Evaluate(Request{
+		Command:                "gh pr view 123; gh pr merge 123",
+		ProjectRoot:            root,
+		ClaudeAllowPermissions: []string{"Bash(gh pr view:*)"},
+	})
+	if disallowedLeaf.Decision != DecisionManual {
+		t.Fatalf("compound with unmatched leaf decision = %s, want manual; result=%+v", disallowedLeaf.Decision, disallowedLeaf)
+	}
+
+	rtkBroadPermission := Evaluate(Request{
+		Command:                "rtk grep title; echo done",
+		ProjectRoot:            root,
+		ClaudeAllowPermissions: []string{"Bash(rtk:*)"},
+	})
+	if rtkBroadPermission.Decision != DecisionManual {
+		t.Fatalf("rtk broad permission decision = %s, want manual; result=%+v", rtkBroadPermission.Decision, rtkBroadPermission)
+	}
+}
+
+func TestEvaluateRejectsBroadClaudeAllowPermissionsAsRuntimeAllowSource(t *testing.T) {
+	root := t.TempDir()
+	for _, tt := range []struct {
+		name       string
+		command    string
+		permission string
+	}{
+		{name: "wildcard", command: "gh pr view 123", permission: "Bash(*)"},
+		{name: "gh family", command: "gh pr merge 123", permission: "Bash(gh:*)"},
+		{name: "gh pr family", command: "gh pr merge 123", permission: "Bash(gh pr:*)"},
+		{name: "grep family", command: "grep title", permission: "Bash(grep:*)"},
+		{name: "rtk family", command: "rtk grep title", permission: "Bash(rtk:*)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := Evaluate(Request{
+				Command:                tt.command,
+				ProjectRoot:            root,
+				ClaudeAllowPermissions: []string{tt.permission},
+			})
+			if result.Decision != DecisionManual {
+				t.Fatalf("decision = %s, want manual for %s; result=%+v", result.Decision, tt.permission, result)
+			}
+		})
+	}
+}
+
+func TestEvaluateRequiresFullRuntimeShapeForClaudeAllowPermissions(t *testing.T) {
+	root := t.TempDir()
+	for _, tt := range []struct {
+		name    string
+		command string
+	}{
+		{name: "disallowed git diff execution hook", command: "git diff --ext-diff"},
+		{name: "disallowed git diff output path", command: "git diff --output=/tmp/out"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := Evaluate(Request{
+				Command:                tt.command,
+				ProjectRoot:            root,
+				ClaudeAllowPermissions: []string{"Bash(git diff:*)"},
+			})
+			if result.Decision != DecisionManual {
+				t.Fatalf("decision = %s, want manual; result=%+v", result.Decision, result)
+			}
+		})
+	}
+}
+
+func TestEvaluateAppliesClaudeDenyPermissionsBeforeAllowSources(t *testing.T) {
+	root := t.TempDir()
+	policy := &Policy{Rules: []PolicyRule{{
+		Kind:     "command-shape",
+		Identity: "gh pr view <number>",
+		Decision: DecisionAllow,
+	}}}
+	for _, tt := range []struct {
+		name    string
+		command string
+		allows  []string
+		denies  []string
+		policy  *Policy
+	}{
+		{name: "wildcard deny", command: "echo done", denies: []string{"Bash(*)"}},
+		{name: "broad gh deny beats specific allow", command: "gh pr view 123", allows: []string{"Bash(gh pr view:*)"}, denies: []string{"Bash(gh:*)"}},
+		{name: "rtk deny matches literal wrapper", command: "rtk grep title", denies: []string{"Bash(rtk:*)"}},
+		{name: "deny beats project policy", command: "gh pr view 123", denies: []string{"Bash(gh pr view:*)"}, policy: policy},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := Evaluate(Request{
+				Command:                tt.command,
+				ProjectRoot:            root,
+				Policy:                 tt.policy,
+				ClaudeAllowPermissions: tt.allows,
+				ClaudeDenyPermissions:  tt.denies,
+			})
+			if result.Decision != DecisionDeny {
+				t.Fatalf("decision = %s, want deny; result=%+v", result.Decision, result)
+			}
+		})
+	}
+}
+
+func TestEvaluateKeepsSafetyFloorAboveClaudeAllowPermissions(t *testing.T) {
+	root := t.TempDir()
+	for _, tt := range []struct {
+		name    string
+		command string
+		want    Decision
+	}{
+		{name: "destructive git", command: "git reset --hard", want: DecisionDeny},
+		{name: "rg execution helper", command: "rg --pre TODO", want: DecisionManual},
+		{name: "shell wrapper", command: `sh -c "echo ok"`, want: DecisionManual},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := Evaluate(Request{
+				Command:                tt.command,
+				ProjectRoot:            root,
+				ClaudeAllowPermissions: []string{"Bash(git:*)", "Bash(rg:*)", "Bash(sh:*)"},
+			})
+			if result.Decision != tt.want {
+				t.Fatalf("decision = %s, want %s; result=%+v", result.Decision, tt.want, result)
+			}
+		})
+	}
+}
+
 func TestEvaluateDoesNotAllowPathsOutsideSafeRoot(t *testing.T) {
 	parent := t.TempDir()
 	root := filepath.Join(parent, "safe")
@@ -1325,5 +1465,33 @@ func TestExtractBashPermissionsSortsNestedPermissions(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("permissions = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestExtractClaudeAllowBashPermissionsReadsOnlyPermissionsAllow(t *testing.T) {
+	settings := []byte(`{
+		"permissions": {
+			"allow": ["Bash(gh pr view:*)", {"nested": "Bash(grep -i:*)"}],
+			"deny": ["Bash(git reset:*)"]
+		},
+		"hooks": {
+			"PreToolUse": [{"hooks": [{"command": "echo Bash(curl:*)"}]}]
+		}
+	}`)
+
+	got := ExtractClaudeAllowBashPermissions(settings)
+	want := []string{"Bash(gh pr view:*)", "Bash(grep -i:*)"}
+	if len(got) != len(want) {
+		t.Fatalf("permissions = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("permissions = %v, want %v", got, want)
+		}
+	}
+
+	deny := ExtractClaudeDenyBashPermissions(settings)
+	if len(deny) != 1 || deny[0] != "Bash(git reset:*)" {
+		t.Fatalf("deny permissions = %v, want [Bash(git reset:*)]", deny)
 	}
 }

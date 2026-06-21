@@ -42,11 +42,13 @@ const (
 )
 
 type Request struct {
-	Command            string
-	ProjectRoot        string
-	SafeRoots          []string
-	PolicyArtifactRoot string
-	Policy             *Policy
+	Command                string
+	ProjectRoot            string
+	SafeRoots              []string
+	PolicyArtifactRoot     string
+	Policy                 *Policy
+	ClaudeAllowPermissions []string
+	ClaudeDenyPermissions  []string
 }
 
 type Result struct {
@@ -123,9 +125,11 @@ func findCommandField(value any) (string, bool) {
 }
 
 type evaluator struct {
-	roots      []string
-	defaultCWD string
-	policy     *Policy
+	roots                  []string
+	defaultCWD             string
+	policy                 *Policy
+	claudeAllowPermissions []claudeAllowPermission
+	claudeDenyPermissions  []claudeDenyPermission
 }
 
 func newEvaluator(req Request) evaluator {
@@ -146,5 +150,11 @@ func newEvaluator(req Request) evaluator {
 	if len(roots) > 0 {
 		defaultCWD = roots[0]
 	}
-	return evaluator{roots: roots, defaultCWD: defaultCWD, policy: req.Policy}
+	return evaluator{
+		roots:                  roots,
+		defaultCWD:             defaultCWD,
+		policy:                 req.Policy,
+		claudeAllowPermissions: parseClaudeAllowPermissions(req.ClaudeAllowPermissions),
+		claudeDenyPermissions:  parseClaudeDenyPermissions(req.ClaudeDenyPermissions),
+	}
 }

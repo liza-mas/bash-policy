@@ -29,13 +29,21 @@ activation mode unless `--command` is supplied explicitly.
 ## Claude Settings
 
 `.claude/settings.json` remains Claude Code's project settings file, not the
-Bash policy file.
+Bash policy file. For Claude evaluation, Bash policy reads both
+`~/.claude/settings.json` and `[policy-artifact-root]/.claude/settings.json`.
+Repo-local settings prevail over exact normalized conflicts with user-global
+settings. `permissions.deny` entries are deny inputs; admissible
+`permissions.allow` entries are runtime leaf allow sources only after the
+non-overridable safety floor and concrete command-shape checks have accepted the
+parsed command unit. Broad allow families remain migration inventory, not direct
+runtime allow rules.
 
 | Command | How `.claude/settings.json` is used |
 |---------|-------------------------------------|
 | `bash-policy init --provider claude` | Writes or merges the Claude PreToolUse Bash hook. |
 | `bash-policy activation ... --provider claude` | Updates the installed hook activation. |
-| `bash-policy evaluate` | Does not read Claude settings; runtime decisions come from built-ins, `.bash-policy.yaml`, safe roots, and the requested activation mode. |
+| `bash-policy evaluate --provider claude` | Reads user-global and repo-local Claude settings. `permissions.deny` entries are deny inputs; admissible `permissions.allow` entries are runtime allow entries for parsed command units. Built-ins, `.bash-policy.yaml`, safe roots, concrete command-shape checks, repo-local precedence, and activation mode still apply. |
+| `bash-policy evaluate --provider codex` | Does not read Claude settings; runtime decisions come from built-ins, `.bash-policy.yaml`, safe roots, and the requested activation mode. |
 | `bash-policy validate` | Reads `.bash-policy.yaml` and reports schema errors before activation or export workflows rely on it. |
 | `bash-policy report --claude-settings .claude/settings.json` | Reads current `Bash(...)` permissions so reports can list broad Claude permission families to migrate. |
 | `bash-policy export --claude-settings .claude/settings.json` | Reads current `Bash(...)` permissions so `.bash-policy-candidates.yaml` can include unresolved `permission-family` candidates. |

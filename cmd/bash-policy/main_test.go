@@ -76,8 +76,7 @@ func TestRunRejectsUnsupportedShape(t *testing.T) {
 }
 
 func TestRunEvaluateCLIJSON(t *testing.T) {
-	t.Parallel()
-
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	payload := `{"command":"git -C ` + root + ` status --short"}`
 	var stdout bytes.Buffer

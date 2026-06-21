@@ -277,7 +277,13 @@ explicitly.
   wrappers, canonicalizes legacy full summaries where possible, and drops
   unreconstructable display-truncated identities.
 - A curated `.bash-policy.yaml` contains runtime command-shape rules plus
-  permission-family `resolved` entries used only to suppress export noise.
+  permission-family `resolved` entries used only to suppress export noise. For
+  Claude evaluation, user-global and repo-local Claude settings may also
+  contribute runtime inputs: `permissions.deny` entries act as deny inputs, and
+  admissible `permissions.allow` entries may act as runtime allow inputs for
+  parsed command units after the safety floor and concrete command-shape checks
+  pass. Repo-local settings prevail over exact normalized conflicts with
+  user-global settings.
 - Standalone documentation must describe the step-by-step workflow from dry-run
   report to candidate export, curation, and activation, including the distinct
   roles of `.claude/settings.json`, `.bash-policy-candidates.yaml`, and
@@ -300,12 +306,13 @@ explicitly.
   RTK bypasses, unsupported `env -C` shapes, unquoted globs, runtime-determined
   `sed` targets, credential-path reads, and filesystem allowlist failures.
 - DN-003: Existing Claude `Bash(...)` permissions informed the packaged built-in
-  default catalog, but they are not read as a runtime allow catalog. Read-only
-  families may appear in packaged default allow profiles only when guarded by
-  the non-overridable safety floor and profile-specific argument constraints.
-  Broad non-read-only, environment-dump, shell-wrapper, and bypass-oriented
-  entries remain candidate inventory and must be split, narrowed, or left manual
-  before any concrete command profile can emit auto-allow.
+  default catalog, but broad families are not read as direct runtime allow
+  rules. Read-only families may appear in packaged default allow profiles only
+  when guarded by the non-overridable safety floor and profile-specific argument
+  constraints. Broad non-read-only, environment-dump, shell-wrapper, and
+  bypass-oriented entries remain candidate inventory and must be split,
+  narrowed, or left manual before any concrete command profile can emit
+  auto-allow.
 - DN-004: Bash policy activation is an explicit provider hook state:
   `on`, `dry-run`, or `off`. `dry-run` means classify and persist redacted
   telemetry without changing provider behavior. `on` means the provider adapter
@@ -329,7 +336,12 @@ explicitly.
   public spelling.
 - DN-007: Hard-coded command profiles are bootstrap defaults, not the source of
   truth once a project policy configuration exists. Rule precedence is:
-  non-overridable safety floor, configured project rules, and built-in defaults.
+  non-overridable safety floor, effective Claude `permissions.deny` entries for
+  Claude provider evaluation, configured project rules, admissible Claude
+  `permissions.allow` entries for Claude provider evaluation, and built-in
+  defaults. Effective Claude settings combine `~/.claude/settings.json` with
+  `[POLICY_ARTIFACT_ROOT]/.claude/settings.json`; repo-local entries prevail over
+  exact normalized conflicts with user-global entries.
   The built-in default catalog should include read-only command families commonly
   granted in Claude settings when the safety floor and
   profile-specific argument constraints can reject hazardous targets, flags,
@@ -341,9 +353,11 @@ explicitly.
   `[POLICY_ARTIFACT_ROOT]/.claude/settings.json`, to
   `[POLICY_ARTIFACT_ROOT]/.bash-policy-candidates.yaml`. The user curates
   accepted rules into `[POLICY_ARTIFACT_ROOT]/.bash-policy.yaml`, then activates
-  evaluation against
-  `.bash-policy.yaml`. The candidates file is generated evidence, not the policy
-  source of truth. It should contain only deduplicated unresolved items absent
+  evaluation against `.bash-policy.yaml`, built-ins, and for Claude provider
+  hooks, effective Claude settings from `~/.claude/settings.json` and
+  `[POLICY_ARTIFACT_ROOT]/.claude/settings.json`. The candidates file is
+  generated evidence, not the policy source of truth. It should contain only
+  deduplicated unresolved items absent
   from `.bash-policy.yaml` and not already covered by built-in default profiles.
 - DN-009: A command-shape identity is the canonical, redacted policy key derived
   from parsed Bash syntax after wrapper peeling, cwd validation, argument
@@ -789,17 +803,27 @@ verified.
   from current candidate sources plus `.bash-policy.yaml`, avoid duplicates, and
   omit candidates covered by `.bash-policy.yaml` or built-in default profiles
   regardless of previous candidate-file contents.
-- FR-004-14: Activation must evaluate against `.bash-policy.yaml`, not directly
-  against raw dry-run logs, reports, `.claude/settings.json`, or
-  `.bash-policy-candidates.yaml`.
+- FR-004-14: Activation must evaluate against built-ins and `.bash-policy.yaml`,
+  and for Claude provider evaluation may additionally use effective Claude
+  settings from `~/.claude/settings.json` and
+  `[POLICY_ARTIFACT_ROOT]/.claude/settings.json`. `permissions.deny` entries must
+  be evaluated as deny inputs; admissible `permissions.allow` entries may be
+  runtime allow entries for parsed command units after the non-overridable safety
+  floor and concrete command-shape checks pass. Repo-local settings must prevail
+  over exact normalized conflicts with user-global settings. Activation must not
+  evaluate against raw dry-run logs, reports, `.bash-policy-candidates.yaml`,
+  broad allow permission families, or Claude settings entries outside
+  `permissions.allow` and `permissions.deny`.
 - FR-004-15: The implementation must update standalone configuration
   documentation at `docs/CONFIGURATION.md`.
   The documentation must explain the user journey across activation states,
   `.bash-policy-dry-run.jsonl`, `.claude/settings.json`,
   `.bash-policy-candidates.yaml`, `.bash-policy.yaml`, export, curation, and
   activation. It must explain that `.claude/settings.json` is used by Claude
-  Code and by `bash-policy export --claude-settings` as a permission-family
-  candidate source, but is not the runtime command-shape policy file.
+  Code, by `bash-policy export --claude-settings` as a permission-family
+  candidate source, and by `bash-policy evaluate --provider claude` as effective
+  runtime deny and admissible allow sources for parsed command units from
+  `permissions.deny` and `permissions.allow`.
 - FR-004-16: When `bash-policy init` installs or repairs Bash policy hooks, it must
   ensure generated policy artifact paths are ignored or worktree-excluded under
   `policy-artifact-root`. `bash-policy activation` must perform the same
@@ -1012,8 +1036,9 @@ verified.
 - AC-005-8: Given an observed compound command with multiple operations, when the
   regression corpus runs, then tests assert the diagnostic compound shape,
   quote-preserving leaf extraction, omission of built-in-covered leaves, and
-  successful runtime allow when all leaves are covered by built-ins or configured
-  leaf command-shape rules.
+  successful runtime allow when all leaves are covered by built-ins, configured
+  leaf command-shape rules, or admissible Claude `permissions.allow` entries,
+  and deny when any leaf matches an effective Claude `permissions.deny` entry.
 - AC-005-9: Given legacy candidate evidence includes both a reconstructable full
   summary and an unreconstructable display-truncated summary, when export tests
   run, then the full summary is canonicalized into placeholders and the truncated

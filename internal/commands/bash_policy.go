@@ -106,12 +106,18 @@ func BashPolicyEvaluateCommand(input io.Reader, output io.Writer, opts BashPolic
 	if err != nil {
 		return err
 	}
+	claudePermissions, err := readClaudePermissions(opts.Provider, policyRoot)
+	if err != nil {
+		return err
+	}
 	result := bashpolicy.Evaluate(bashpolicy.Request{
-		Command:            command,
-		ProjectRoot:        firstSafeRoot(opts.SafeRoots),
-		SafeRoots:          opts.SafeRoots,
-		PolicyArtifactRoot: policyRoot,
-		Policy:             policy,
+		Command:                command,
+		ProjectRoot:            firstSafeRoot(opts.SafeRoots),
+		SafeRoots:              opts.SafeRoots,
+		PolicyArtifactRoot:     policyRoot,
+		Policy:                 policy,
+		ClaudeAllowPermissions: claudePermissions.allow,
+		ClaudeDenyPermissions:  claudePermissions.deny,
 	})
 	if opts.JSON {
 		return json.NewEncoder(output).Encode(result)
@@ -315,6 +321,102 @@ func firstSafeRoot(roots []string) string {
 		return ""
 	}
 	return roots[0]
+}
+
+func readClaudePermissions(provider string, policyRoot string) (claudeSettingsPermissions, error) {
+	if strings.ToLower(strings.TrimSpace(provider)) != "claude" || policyRoot == "" {
+		return claudeSettingsPermissions{}, nil
+	}
+	globalPermissions, err := readClaudeSettingsPermissions(userClaudeSettingsPath(), false)
+	if err != nil {
+		return claudeSettingsPermissions{}, err
+	}
+	repoPermissions, err := readClaudeSettingsPermissions(filepath.Join(policyRoot, ".claude", "settings.json"), true)
+	if err != nil {
+		return claudeSettingsPermissions{}, err
+	}
+	repoAllow := normalizedPermissionSet(repoPermissions.allow)
+	repoDeny := normalizedPermissionSet(repoPermissions.deny)
+	allow := make([]string, 0, len(globalPermissions.allow)+len(repoPermissions.allow))
+	for _, permission := range globalPermissions.allow {
+		identity := bashpolicy.NormalizePermissionFamily(permission)
+		if identity != "" && repoDeny[identity] {
+			continue
+		}
+		allow = append(allow, permission)
+	}
+	allow = append(allow, repoPermissions.allow...)
+	deny := make([]string, 0, len(globalPermissions.deny)+len(repoPermissions.deny))
+	for _, permission := range globalPermissions.deny {
+		identity := bashpolicy.NormalizePermissionFamily(permission)
+		if identity != "" && repoAllow[identity] {
+			continue
+		}
+		deny = append(deny, permission)
+	}
+	deny = append(deny, repoPermissions.deny...)
+	return claudeSettingsPermissions{
+		allow: uniquePermissions(allow),
+		deny:  uniquePermissions(deny),
+	}, nil
+}
+
+type claudeSettingsPermissions struct {
+	allow []string
+	deny  []string
+}
+
+func userClaudeSettingsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".claude", "settings.json")
+}
+
+func readClaudeSettingsPermissions(settingsPath string, repoLocal bool) (claudeSettingsPermissions, error) {
+	if strings.TrimSpace(settingsPath) == "" {
+		return claudeSettingsPermissions{}, nil
+	}
+	content, err := os.ReadFile(settingsPath)
+	if os.IsNotExist(err) {
+		return claudeSettingsPermissions{}, nil
+	}
+	if err != nil {
+		scope := "user"
+		if repoLocal {
+			scope = "repo"
+		}
+		return claudeSettingsPermissions{}, fmt.Errorf("read %s Claude settings: %w", scope, err)
+	}
+	return claudeSettingsPermissions{
+		allow: bashpolicy.ExtractClaudeAllowBashPermissions(content),
+		deny:  bashpolicy.ExtractClaudeDenyBashPermissions(content),
+	}, nil
+}
+
+func normalizedPermissionSet(permissions []string) map[string]bool {
+	out := make(map[string]bool, len(permissions))
+	for _, permission := range permissions {
+		identity := bashpolicy.NormalizePermissionFamily(permission)
+		if identity != "" {
+			out[identity] = true
+		}
+	}
+	return out
+}
+
+func uniquePermissions(permissions []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(permissions))
+	for _, permission := range permissions {
+		if seen[permission] {
+			continue
+		}
+		seen[permission] = true
+		out = append(out, permission)
+	}
+	return out
 }
 
 func firstNonEmpty(values ...string) string {

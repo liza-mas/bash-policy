@@ -12,7 +12,46 @@ import (
 	"github.com/liza-mas/bash-policy/internal/bashpolicy"
 )
 
+func isolateClaudeHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	return home
+}
+
+func writeClaudeSettings(t *testing.T, root string, settings string) {
+	t.Helper()
+	claudeDir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(settings), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func evaluateClaudeJSON(t *testing.T, policyRoot string, command string) bashpolicy.Result {
+	t.Helper()
+	var output bytes.Buffer
+	err := BashPolicyEvaluateCommand(strings.NewReader(`{"command":"`+command+`"}`), &output, BashPolicyEvaluateOptions{
+		Provider:           "claude",
+		Mode:               "on",
+		PolicyArtifactRoot: policyRoot,
+		SafeRoots:          []string{policyRoot},
+		JSON:               true,
+	})
+	if err != nil {
+		t.Fatalf("BashPolicyEvaluateCommand failed: %v", err)
+	}
+	var result bashpolicy.Result
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatalf("invalid result JSON: %v\n%s", err, output.String())
+	}
+	return result
+}
+
 func TestBashPolicyEvaluateCommandJSON(t *testing.T) {
+	isolateClaudeHome(t)
 	root := t.TempDir()
 	payload := `{"tool_input":{"command":"git -C ` + root + ` status --short"}}`
 
@@ -38,6 +77,7 @@ func TestBashPolicyEvaluateCommandJSON(t *testing.T) {
 }
 
 func TestBashPolicyEvaluateCommandClaudeAllowOutput(t *testing.T) {
+	isolateClaudeHome(t)
 	root := t.TempDir()
 	payload := `{"command":"cd ` + root + ` && git status --short"}`
 
@@ -61,7 +101,93 @@ func TestBashPolicyEvaluateCommandClaudeAllowOutput(t *testing.T) {
 	}
 }
 
+func TestBashPolicyEvaluateCommandLoadsClaudeAllowPermissionsFromPolicyRootSettings(t *testing.T) {
+	isolateClaudeHome(t)
+	root := t.TempDir()
+	writeClaudeSettings(t, root, `{"permissions":{"allow":["Bash(gh pr view:*)"]}}`)
+
+	var output bytes.Buffer
+	err := BashPolicyEvaluateCommand(strings.NewReader(`{"command":"git status --short; gh pr view 123"}`), &output, BashPolicyEvaluateOptions{
+		Provider:           "claude",
+		Mode:               "on",
+		PolicyArtifactRoot: root,
+		SafeRoots:          []string{root},
+	})
+	if err != nil {
+		t.Fatalf("BashPolicyEvaluateCommand failed: %v", err)
+	}
+
+	var hookOutput map[string]map[string]any
+	if err := json.Unmarshal(output.Bytes(), &hookOutput); err != nil {
+		t.Fatalf("invalid Claude hook output: %v\n%s", err, output.String())
+	}
+	if got := hookOutput["hookSpecificOutput"]["permissionDecision"]; got != "allow" {
+		t.Fatalf("permissionDecision = %v, want allow; output=%s", got, output.String())
+	}
+	if got := hookOutput["hookSpecificOutput"]["bashPolicyCommandShape"]; got != "git status --short ; gh pr view <number>" {
+		t.Fatalf("bashPolicyCommandShape = %v, want compound shape; output=%s", got, output.String())
+	}
+}
+
+func TestBashPolicyEvaluateCommandLoadsClaudeAllowPermissionsFromUserSettings(t *testing.T) {
+	home := isolateClaudeHome(t)
+	writeClaudeSettings(t, home, `{"permissions":{"allow":["Bash(gh pr view:*)"]}}`)
+	root := t.TempDir()
+
+	result := evaluateClaudeJSON(t, root, "gh pr view 123")
+
+	if result.Decision != bashpolicy.DecisionAllow {
+		t.Fatalf("decision = %s, want allow; result=%+v", result.Decision, result)
+	}
+	if result.CommandShape != "gh pr view <number>" {
+		t.Fatalf("command shape = %q, want gh pr view <number>", result.CommandShape)
+	}
+}
+
+func TestBashPolicyEvaluateCommandAppliesClaudeDenyPermissionsFromUserSettings(t *testing.T) {
+	home := isolateClaudeHome(t)
+	writeClaudeSettings(t, home, `{"permissions":{"deny":["Bash(gh pr view:*)"]}}`)
+	root := t.TempDir()
+
+	result := evaluateClaudeJSON(t, root, "gh pr view 123")
+
+	if result.Decision != bashpolicy.DecisionDeny {
+		t.Fatalf("decision = %s, want deny; result=%+v", result.Decision, result)
+	}
+}
+
+func TestBashPolicyEvaluateCommandAppliesClaudeDenyPermissionsFromPolicyRootSettings(t *testing.T) {
+	isolateClaudeHome(t)
+	root := t.TempDir()
+	writeClaudeSettings(t, root, `{"permissions":{"deny":["Bash(gh pr view:*)"]}}`)
+
+	result := evaluateClaudeJSON(t, root, "gh pr view 123")
+
+	if result.Decision != bashpolicy.DecisionDeny {
+		t.Fatalf("decision = %s, want deny; result=%+v", result.Decision, result)
+	}
+}
+
+func TestBashPolicyEvaluateCommandPolicyRootSettingsPrevailOverUserSettingsConflicts(t *testing.T) {
+	home := isolateClaudeHome(t)
+	root := t.TempDir()
+
+	writeClaudeSettings(t, home, `{"permissions":{"allow":["Bash(gh pr view:*)"],"deny":["Bash(grep -i:*)"]}}`)
+	writeClaudeSettings(t, root, `{"permissions":{"allow":["Bash(grep -i:*)"],"deny":["Bash(gh pr view:*)"]}}`)
+
+	deniedByRepo := evaluateClaudeJSON(t, root, "gh pr view 123")
+	if deniedByRepo.Decision != bashpolicy.DecisionDeny {
+		t.Fatalf("repo deny decision = %s, want deny; result=%+v", deniedByRepo.Decision, deniedByRepo)
+	}
+
+	allowedByRepo := evaluateClaudeJSON(t, root, "grep -i title")
+	if allowedByRepo.Decision != bashpolicy.DecisionAllow {
+		t.Fatalf("repo allow decision = %s, want allow; result=%+v", allowedByRepo.Decision, allowedByRepo)
+	}
+}
+
 func TestBashPolicyEvaluateCommandDoesNotAllowUnsafeOrDryRunCommands(t *testing.T) {
+	isolateClaudeHome(t)
 	root := t.TempDir()
 
 	tests := []struct {

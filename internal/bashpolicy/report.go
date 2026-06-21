@@ -105,6 +105,29 @@ func ExtractBashPermissions(settingsJSON []byte) []string {
 	return permissions
 }
 
+func ExtractClaudeAllowBashPermissions(settingsJSON []byte) []string {
+	return extractClaudeBashPermissions(settingsJSON, "allow")
+}
+
+func ExtractClaudeDenyBashPermissions(settingsJSON []byte) []string {
+	return extractClaudeBashPermissions(settingsJSON, "deny")
+}
+
+func extractClaudeBashPermissions(settingsJSON []byte, section string) []string {
+	var doc map[string]any
+	if err := json.Unmarshal(settingsJSON, &doc); err != nil {
+		return nil
+	}
+	permissionsSection, ok := doc["permissions"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	var permissions []string
+	collectBashPermissions(permissionsSection[section], &permissions)
+	sort.Strings(permissions)
+	return uniqueStrings(permissions)
+}
+
 func collectBashPermissions(value any, out *[]string) {
 	switch typed := value.(type) {
 	case string:
