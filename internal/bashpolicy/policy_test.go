@@ -289,6 +289,7 @@ func TestEvaluateNormalizesBareSafePathOperandsByCommandProfile(t *testing.T) {
 		{command: "git check-ignore -v .bash-policy-dry-run.jsonl", want: "git check-ignore -v <safe-path>"},
 		{command: "git diff --cached README.md", want: "git diff --cached <safe-path>"},
 		{command: "git diff HEAD README.md", want: "git diff HEAD <safe-path>"},
+		{command: "git diff --name-only -- *.go", want: "git diff --name-only -- <safe-path>"},
 		{command: `git grep -n -E "func Test" -- *.go`, want: "git grep -n -E <pattern> -- <safe-path>"},
 		{command: `git grep -n internal/bashpolicy/policy.go -- *.go *.tmpl *.md internal/bashpolicy/policy.go`, want: "git grep -n <pattern> -- <safe-path> <safe-path> <safe-path> <safe-path>"},
 		{command: `grep -n "CommandRule\|policyCommandShape" internal/bashpolicy/policy.go`, want: "grep -n <pattern> <safe-path>"},
@@ -302,6 +303,9 @@ func TestEvaluateNormalizesBareSafePathOperandsByCommandProfile(t *testing.T) {
 		{command: "grep -f patterns.txt internal/bashpolicy/policy.go", want: "grep -f <safe-path> <safe-path>"},
 		{command: "grep --file=patterns.txt internal/bashpolicy/policy.go", want: "grep --file=<safe-path> <safe-path>"},
 		{command: "grep README.md internal/bashpolicy/policy.go", want: "grep <pattern> <safe-path>"},
+		{command: "grep -rn TODO --include=*.go", want: "grep -rn <pattern> --include=<safe-glob>"},
+		{command: "grep -rn TODO --include=*.go internal/bashpolicy", want: "grep -rn <pattern> --include=<safe-glob> <safe-path>"},
+		{command: "sed -n 16,27p README.md", want: "sed -n <number>,<number>p <safe-path>"},
 	}
 
 	for _, tt := range tests {
@@ -467,7 +471,10 @@ func TestEvaluateProjectPolicyRulesAfterSafetyFloor(t *testing.T) {
 		{Kind: "command-shape", Identity: "grep -HRefunc <pattern>", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "grep -- <pattern> <safe-path>", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "grep <redacted> <safe-path>", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "grep -rn <pattern> --include=<safe-glob>", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "grep -rn <pattern> --include=<safe-glob> <safe-path>...", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "git grep -n -E <pattern> -- <safe-path>...", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "sed -n <number>,<number>p <safe-path>...", Decision: DecisionAllow},
 	}}
 
 	allowed := Evaluate(Request{Command: "gh pr view 123", ProjectRoot: root, Policy: policy})
@@ -587,6 +594,53 @@ func TestEvaluateProjectPolicyRulesAfterSafetyFloor(t *testing.T) {
 	grepSensitivePattern := Evaluate(Request{Command: "grep sk-live-abc123 internal/bashpolicy/policy.go", ProjectRoot: root, Policy: policy})
 	if grepSensitivePattern.Decision != DecisionDeny {
 		t.Fatalf("grep sensitive pattern decision = %s, want deny; result=%+v", grepSensitivePattern.Decision, grepSensitivePattern)
+	}
+
+	grepInclude := Evaluate(Request{Command: "grep -rn TODO --include=*.go internal/bashpolicy", ProjectRoot: root, Policy: policy})
+	if grepInclude.Decision != DecisionAllow {
+		t.Fatalf("grep include decision = %s, want allow; result=%+v", grepInclude.Decision, grepInclude)
+	}
+	if grepInclude.CommandShape != "grep -rn <pattern> --include=<safe-glob> <safe-path>" {
+		t.Fatalf("grep include shape = %q, want normalized shape", grepInclude.CommandShape)
+	}
+
+	for _, command := range []string{
+		"grep -rn TODO --include=* internal/bashpolicy",
+	} {
+		t.Run(command, func(t *testing.T) {
+			got := Evaluate(Request{Command: command, ProjectRoot: root, Policy: policy})
+			if got.Decision != DecisionManual {
+				t.Fatalf("decision = %s, want manual; result=%+v", got.Decision, got)
+			}
+		})
+	}
+	grepSensitiveInclude := Evaluate(Request{Command: "grep -rn TODO --include=*.env internal/bashpolicy", ProjectRoot: root, Policy: policy})
+	if grepSensitiveInclude.Decision != DecisionDeny {
+		t.Fatalf("grep sensitive include decision = %s, want deny; result=%+v", grepSensitiveInclude.Decision, grepSensitiveInclude)
+	}
+
+	sedRange := Evaluate(Request{Command: "sed -n 16,27p README.md", ProjectRoot: root, Policy: policy})
+	if sedRange.Decision != DecisionAllow {
+		t.Fatalf("sed range decision = %s, want allow; result=%+v", sedRange.Decision, sedRange)
+	}
+	if sedRange.CommandShape != "sed -n <number>,<number>p <safe-path>" {
+		t.Fatalf("sed range shape = %q, want normalized shape", sedRange.CommandShape)
+	}
+
+	for _, command := range []string{
+		`sed -n 1,5p -e '1e id' README.md`,
+		`sed -n 1,5p README.md -e '2w /tmp/pwned'`,
+		`sed -n 1,5p --expression '1e id' README.md`,
+		`sed -n 1,5p -f script.sed README.md`,
+		`sed -n 1,5p -i.bak README.md`,
+		`sed -n '1e id' README.md`,
+	} {
+		t.Run(command, func(t *testing.T) {
+			got := Evaluate(Request{Command: command, ProjectRoot: root, Policy: policy})
+			if got.Decision == DecisionAllow {
+				t.Fatalf("decision = allow, want not allow; result=%+v", got)
+			}
+		})
 	}
 
 	gitGrepGlob := Evaluate(Request{Command: `git grep -n -E "func Test" -- *.go`, ProjectRoot: root, Policy: policy})
@@ -1299,6 +1353,63 @@ func TestBuildCandidatesRenormalizesGitGrepPathspecs(t *testing.T) {
 	}
 }
 
+func TestBuildCandidatesRenormalizesGitDiffGrepIncludeAndSed(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	events := []Event{{
+		Provider:     "claude",
+		Decision:     DecisionManual,
+		Summary:      `git diff --name-only -- *.go`,
+		CommandShape: `git diff --name-only -- *.go`,
+	}, {
+		Provider:     "claude",
+		Decision:     DecisionManual,
+		Summary:      `grep -rn TODO --include=*.go`,
+		CommandShape: `grep -rn <pattern> --include=*.go`,
+	}, {
+		Provider:     "claude",
+		Decision:     DecisionManual,
+		Summary:      `grep -rn TODO --include=*.go internal`,
+		CommandShape: `grep -rn <pattern> --include=*.go <safe-path>`,
+	}, {
+		Provider:     "claude",
+		Decision:     DecisionManual,
+		Summary:      `sed -n 16,27p README.md`,
+		CommandShape: `sed -n 16,27p README.md`,
+	}}
+
+	candidates := BuildCandidates("claude", nil, nil, events, root)
+	got := map[string]bool{}
+	for _, candidate := range candidates.Candidates {
+		got[candidate.Identity] = true
+	}
+
+	if got["git diff --name-only -- <safe-path>"] {
+		t.Fatalf("built-in-covered git diff pathspec candidate was not filtered: %+v", candidates.Candidates)
+	}
+	for _, want := range []string{
+		"grep -rn <pattern> --include=<safe-glob>",
+		"grep -rn <pattern> --include=<safe-glob> <safe-path>",
+		"sed -n <number>,<number>p <safe-path>",
+	} {
+		if !got[want] {
+			t.Fatalf("missing normalized candidate %q in %+v", want, candidates.Candidates)
+		}
+	}
+	for _, unexpected := range []string{
+		"git diff --name-only -- *.go",
+		"grep -rn <pattern> --include=*.go",
+		"grep -rn <pattern> --include=*.go <safe-path>",
+		"sed -n 16,27p README.md",
+	} {
+		if got[unexpected] {
+			t.Fatalf("unexpected literal candidate %q in %+v", unexpected, candidates.Candidates)
+		}
+	}
+}
+
 func TestSanitizeSummaryPreservesQuotedWhitespace(t *testing.T) {
 	got := sanitizeSummary(` echo    'alpha  beta'    "sk-live-abc123"    "gamma  delta" `)
 	want := `echo 'alpha  beta' <redacted> "gamma  delta"`
@@ -1529,6 +1640,11 @@ func TestLooksSensitiveRedactsHighEntropyTokensWithoutMaskingCommitSHA(t *testin
 	}
 	if !LooksSensitive("id_rsa") || !LooksSensitive("config/id_ed25519") {
 		t.Fatal("SSH private key path was not classified sensitive")
+	}
+	for _, path := range []string{"key.ppk", "backup.gpg", "secret.asc", "bundle.pkcs12"} {
+		if !LooksSensitive(path) {
+			t.Fatalf("%s was not classified sensitive", path)
+		}
 	}
 	if LooksSensitive("0123456789abcdef0123456789abcdef01234567") {
 		t.Fatal("plain hexadecimal commit-like value should not be classified sensitive")

@@ -364,7 +364,7 @@ explicitly.
   classification, safe-root-aware placeholder normalization, and quote-aware token
   rendering. It includes executable family, subcommand, allowed flags, normalized
   option-value classes, cwd class, and validated placeholders such as
-  `<safe-path>`, `<safe-pathspec>`, or `<pattern>`. Tokens containing whitespace
+  `<safe-path>`, `<safe-pathspec>`, `<safe-glob>`, or `<pattern>`. Tokens containing whitespace
   are rendered quoted so one argv token remains one policy token. It is not a
   human display summary. Two dry-run observations are duplicate candidates when
   their command-shape identities are equal. A curated rule covers an observed command
@@ -410,8 +410,8 @@ explicitly.
   class and must appear only as the last token of the rule. Non-sensitive
   placeholders such as `<number>` and `<fields>` may appear inside a token when
   the command syntax naturally combines values, for example
-  `sed -n <number>,<number>p`; path and redaction placeholders such as
-  `<safe-path>`, `<safe-pathspec>`, `<pattern>`, and `<redacted>` must remain
+  `sed -n <number>,<number>p`; path, glob, pattern, and redaction placeholders such as
+  `<safe-path>`, `<safe-pathspec>`, `<safe-glob>`, `<pattern>`, and `<redacted>` must remain
   whole tokens. A
   curated embedded-placeholder rule must keep the non-placeholder syntax narrow
   enough that write variants or unrelated argument forms do not match
@@ -561,7 +561,7 @@ verified.
   one or more repeated safe operands. Variadic placeholders must not match
   credential paths, paths outside the safe root, or arguments in another
   placeholder class. Embedded placeholders must be limited to non-sensitive
-  placeholder classes such as `<number>`, `<fields>`, and `<pattern>`.
+  placeholder classes such as `<number>`, `<fields>`, `<safe-glob>`, and `<pattern>`.
 - FR-001-29: Unsupported redirections, command substitutions, process
   substitutions, heredocs, shell expansions, and dynamic command names must remain
   fail-closed. Such forms may be summarized for logs, but must not be exported as
@@ -846,7 +846,7 @@ verified.
   inner family before built-in coverage and unresolved-candidate checks.
 - FR-004-20: The generated candidate file and the recommended curated policy must
   prefer placeholder command-shape identities such as `<safe-path>`, `<number>`,
-  `<fields>`, `<pattern>`, and terminal variadic placeholders such as
+  `<fields>`, `<safe-glob>`, `<pattern>`, and terminal variadic placeholders such as
   `<safe-path>...` over literal repository paths whenever the broader shape is
   safe.
 - FR-004-21: Standalone ignore/exclude setup must cover all generated Bash
@@ -929,7 +929,8 @@ verified.
   `docs/CONFIGURATION.md` is reviewed, then it documents `<safe-path>` as the
   preferred path placeholder, terminal `<placeholder>...` syntax,
   embedded non-sensitive placeholder syntax such as
-  `sed -n <number>,<number>p` and grep-style `grep <pattern>` rules,
+  `sed -n <number>,<number>p`, grep-style `grep <pattern>` rules, and
+  safe include-glob rules such as `grep --include=<safe-glob>`,
   quote-preserving command-shape tokens, compound
   evidence splitting into leaf candidates, `rtk` normalization, and the
   operator caution that embedded-placeholder rules should keep literal syntax

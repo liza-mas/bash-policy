@@ -63,6 +63,18 @@ func (ev evaluator) safeGitPathspec(pathspec string, cwd string) bool {
 	return ev.safePath(filepath.FromSlash(dir), cwd)
 }
 
+func safeFileGlob(glob string) bool {
+	glob = strings.TrimSpace(glob)
+	if glob == "" || LooksSensitive(glob) || strings.Contains(glob, "://") ||
+		strings.HasPrefix(glob, "-") || strings.ContainsAny(glob, `/\`) ||
+		!unsafePathPattern(glob) {
+		return false
+	}
+	base := filepath.Base(glob)
+	ext := filepath.Ext(base)
+	return len(ext) > 1 && !strings.ContainsAny(ext, "*?[")
+}
+
 func (ev evaluator) safeExistingPath(path string, cwd string) bool {
 	if unsafePathPattern(path) || LooksSensitive(path) {
 		return false

@@ -122,6 +122,7 @@ exists, pass `--policy-artifact-root` explicitly.
    | `<number>` | A numeric argument such as a PR number, issue number, port, or count. |
    | `<fields>` | A comma-separated field list. |
    | `<pattern>` | A single non-sensitive search-pattern token, intended for grep-style pattern positions. It can match normalized scalar placeholders such as `<fields>`, `<number>`, or `<safe-path>` when those appear as the pattern operand. |
+   | `<safe-glob>` | A constrained non-sensitive file glob, such as `*.go`, for option values that filter filenames without naming a path. |
    | `<redacted>` | A value hidden from artifacts because it looked sensitive. Do not allow this shape unless you can replace it with a safer, intentional shape. |
 
    Append `...` to a final placeholder token to match one or more repeated

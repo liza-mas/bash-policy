@@ -60,6 +60,10 @@ func (ev evaluator) evalSafetyFloor(argv []string, cwd string) Result {
 		if floor := evalGrepSafetyFloor(argv[1:], argv); floor.Decision != "" {
 			return floor
 		}
+	case "sed":
+		if floor := evalSedSafetyFloor(argv[1:], argv); floor.Decision != "" {
+			return floor
+		}
 	}
 	for _, arg := range argv[1:] {
 		if !argLooksPathLike(arg) {

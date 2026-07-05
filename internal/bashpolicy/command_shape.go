@@ -176,6 +176,8 @@ func (ev evaluator) commandShape(argv []string, cwd string) string {
 		return ev.rgCommandShape(argv, cwd)
 	case "grep":
 		return ev.grepCommandShape(argv, cwd)
+	case "sed":
+		return ev.sedCommandShape(argv, cwd)
 	case "cd":
 		if len(argv) == 2 {
 			return strings.Join([]string{argv[0], ev.renderCommandShapeArg(argv[1], cwd, true)}, " ")
@@ -291,7 +293,7 @@ func (ev evaluator) pathspecCommandArgsShape(args []string, cwd string, flagNeed
 			continue
 		}
 		if afterDashDash || !ambiguousBareArgs {
-			out = append(out, ev.renderCommandShapeArg(arg, cwd, true))
+			out = append(out, ev.renderGitPathspecShapeArg(arg, cwd))
 		} else {
 			out = append(out, ev.renderAmbiguousPathspecArg(arg, cwd))
 		}

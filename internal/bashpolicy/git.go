@@ -146,7 +146,7 @@ func (ev evaluator) evalFlagsAndOptionalPathspecs(args []string, cwd string, ori
 			continue
 		}
 		if afterDashDash {
-			if !ev.safePath(arg, cwd) {
+			if !ev.safeGitPathspec(arg, cwd) {
 				return result(DecisionManual, "git pathspec is outside the safe roots or uses unsafe patterns", original)
 			}
 			continue

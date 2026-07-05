@@ -220,6 +220,8 @@ func wholeTokenPlaceholderMatches(placeholder string, identityToken string) bool
 		return looksFieldList(identityToken)
 	case "<pattern>":
 		return commandShapePatternMatches(identityToken)
+	case "<safe-glob>":
+		return identityToken == "<safe-glob>" || safeFileGlob(identityToken)
 	default:
 		return false
 	}
@@ -288,6 +290,16 @@ func consumeEmbeddedPlaceholder(placeholder string, value string) (int, bool) {
 			i++
 		}
 		return i, i > 0 && looksFieldList(value[:i])
+	case "<safe-glob>":
+		i := 0
+		for i < len(value) {
+			c := value[i]
+			if c == ' ' || c == '\t' || c == '"' {
+				break
+			}
+			i++
+		}
+		return i, i > 0 && safeFileGlob(value[:i])
 	default:
 		return 0, false
 	}

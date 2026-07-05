@@ -13,9 +13,13 @@ import (
 var sensitiveExtensions = map[string]bool{
 	".env":      true,
 	".key":      true,
+	".gpg":      true,
+	".asc":      true,
 	".pem":      true,
 	".p12":      true,
 	".pfx":      true,
+	".pkcs12":   true,
+	".ppk":      true,
 	".jks":      true,
 	".keystore": true,
 }

@@ -5,12 +5,25 @@ import (
 )
 
 func evalGrepSafetyFloor(args []string, original []string) Result {
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if arg == "--" {
 			break
 		}
 		if grepShortClusterHasEmbeddedPatternArg(arg) {
 			return result(DecisionManual, "grep short option cluster with embedded pattern or file operand is not safe", original)
+		}
+		if grepInlineIncludeFlag(arg) {
+			if !safeFileGlob(grepInlineIncludeValue(arg)) {
+				return result(DecisionManual, "grep include glob is not safe", original)
+			}
+			continue
+		}
+		if grepIncludeValueFlag(arg) {
+			i++
+			if i >= len(args) || !safeFileGlob(args[i]) {
+				return result(DecisionManual, "grep include glob is not safe", original)
+			}
 		}
 	}
 	return Result{}
@@ -41,6 +54,12 @@ func (ev evaluator) grepCommandShape(argv []string, cwd string) string {
 			case grepInlinePatternFileFlag(arg):
 				out = append(out, ev.renderGrepInlinePathFlag(arg, cwd))
 				patternSeen = true
+			case grepInlineIncludeFlag(arg):
+				rendered, ok := renderGrepInlineIncludeFlag(arg)
+				if !ok {
+					return ""
+				}
+				out = append(out, rendered)
 			case grepPatternValueFlag(arg):
 				out = append(out, ev.renderCommandShapeArg(arg, cwd, false))
 				i++
@@ -55,6 +74,13 @@ func (ev evaluator) grepCommandShape(argv []string, cwd string) string {
 					out = append(out, ev.renderCommandShapeArg(argv[i], cwd, true))
 					patternSeen = true
 				}
+			case grepIncludeValueFlag(arg):
+				out = append(out, ev.renderCommandShapeArg(arg, cwd, false))
+				i++
+				if i >= len(argv) || !safeFileGlob(argv[i]) {
+					return ""
+				}
+				out = append(out, "<safe-glob>")
 			case grepFlagNeedsValue(arg):
 				out = append(out, ev.renderCommandShapeArg(arg, cwd, false))
 				i++
@@ -94,6 +120,18 @@ func grepInlinePatternFileFlag(arg string) bool {
 		(strings.HasPrefix(arg, "-f") && !strings.HasPrefix(arg, "--") && len(arg) > len("-f"))
 }
 
+func grepIncludeValueFlag(arg string) bool {
+	return arg == "--include"
+}
+
+func grepInlineIncludeFlag(arg string) bool {
+	return strings.HasPrefix(arg, "--include=")
+}
+
+func grepInlineIncludeValue(arg string) string {
+	return strings.TrimPrefix(arg, "--include=")
+}
+
 func grepShortClusterHasEmbeddedPatternArg(arg string) bool {
 	if !strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--") || len(arg) <= 2 {
 		return false
@@ -118,6 +156,14 @@ func (ev evaluator) renderGrepInlinePathFlag(arg string, cwd string) string {
 		return "--file=" + ev.renderCommandShapeArg(value, cwd, true)
 	}
 	return "-f" + ev.renderCommandShapeArg(strings.TrimPrefix(arg, "-f"), cwd, true)
+}
+
+func renderGrepInlineIncludeFlag(arg string) (string, bool) {
+	value := grepInlineIncludeValue(arg)
+	if !safeFileGlob(value) {
+		return "", false
+	}
+	return "--include=<safe-glob>", true
 }
 
 func grepFlagNeedsValue(arg string) bool {
