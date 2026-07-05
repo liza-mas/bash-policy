@@ -1,0 +1,251 @@
+rules:
+  # Runtime command-shape rules accepted from dry-run evidence.
+  - kind: command-shape
+    identity: git --no-pager diff --cached --no-color <safe-path>
+    decision: allow
+  - kind: command-shape
+    identity: git --no-pager diff --no-color
+    decision: allow
+  - kind: command-shape
+    identity: git --no-pager diff <safe-path>...
+    decision: allow
+  - kind: command-shape
+    identity: git check-ignore -v  <safe-path>
+    decision: allow
+  - kind: command-shape
+    identity: git diff --cached <safe-path>...
+    decision: allow
+  - kind: command-shape
+    identity: git diff <safe-path>...
+    decision: allow
+  - kind: command-shape
+    identity: git log --oneline -<number>
+    decision: allow
+  - kind: command-shape
+    identity: git ls-files --others --exclude-standard
+    decision: allow
+  - kind: command-shape
+    identity: git status --porcelain <safe-path>...
+    decision: allow
+  - kind: command-shape
+    identity: grep <pattern> <safe-path>...
+    decision: allow
+  - kind: command-shape
+    identity: grep -A<number> -B<number> <pattern>
+    decision: allow
+  - kind: command-shape
+    identity: grep -E <pattern>
+    decision: allow
+  - kind: command-shape
+    identity: grep -iE <pattern>
+    decision: allow
+  - kind: command-shape
+    identity: grep -nE -i <pattern> <safe-path>...
+    decision: allow
+  - kind: command-shape
+    identity: grep -rn <pattern> --include=*.go .
+    decision: allow
+  - kind: command-shape
+    identity: grep -rn <pattern> --include=*.go <safe-path>...
+    decision: allow
+  - kind: command-shape
+    identity: grep -v <pattern>
+    decision: allow
+  - kind: command-shape
+    identity: grep <pattern>
+    decision: allow
+  - kind: command-shape
+    identity: head -<number>
+    decision: allow
+  - kind: command-shape
+    identity: sed -n <number>,<number>p
+    decision: allow
+  - kind: command-shape
+    identity: nl -ba <safe-path>
+    decision: allow
+  - kind: command-shape
+    identity: sed -n <number>,<number>p <safe-path>
+    decision: allow
+  - kind: command-shape
+    identity: tail -<number>
+    decision: allow
+  - kind: command-shape
+    identity: tail -n +<number>
+    decision: allow
+  - kind: command-shape
+    identity: "true"
+    decision: allow
+
+  # Export-only bookkeeping for reviewed broad Claude Bash permission families.
+  # These do not authorize runtime commands.
+  - kind: permission-family
+    identity: Bash(/usr/bin/test:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(ast-grep:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(awk:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(bash:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(bun:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(cargo:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(clippy-driver:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(curl:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(diff-cover:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(env:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(eslint:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(find:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(gh:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(git:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(go -C:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(go build:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(go doc:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(go fmt:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(go mod:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(go test:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(go vet:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(gofmt:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(grep:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(jq:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(liza:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(make:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(mdq:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(mdtoc:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(mypy:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(node:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(npm:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(npx:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(pip3:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(pip:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(pnpm:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(pre-commit:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(prettier:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(printenv:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(pytest:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(python3:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(python:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(ruff:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(rustfmt:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(scip-search:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(sed:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(semble:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(shellcheck:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(sqlfluff:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(stacklit:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(test:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(tsc:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(uv:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(uvx:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(vitest:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(wget:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(yarn:*)
+    status: resolved
+  - kind: permission-family
+    identity: Bash(yq:*)
+    status: resolved

@@ -27,6 +27,42 @@ func (ev evaluator) safePath(path string, cwd string) bool {
 	return ev.insideAnyRoot(resolved)
 }
 
+func (ev evaluator) safeGitPathspec(pathspec string, cwd string) bool {
+	pathspec = strings.TrimSpace(pathspec)
+	if pathspec == "" || LooksSensitive(pathspec) || strings.Contains(pathspec, "://") ||
+		strings.HasPrefix(pathspec, ":") || strings.HasPrefix(pathspec, "~") ||
+		filepath.IsAbs(pathspec) {
+		return false
+	}
+	if !unsafePathPattern(pathspec) {
+		return ev.safePath(pathspec, cwd) &&
+			(argLooksPathLike(pathspec) || ev.safeExistingPath(pathspec, cwd) || filepath.Ext(filepath.Base(pathspec)) != "")
+	}
+
+	normalized := strings.ReplaceAll(pathspec, "\\", "/")
+	if normalized == "." || normalized == ".." ||
+		strings.HasPrefix(normalized, "../") ||
+		strings.Contains(normalized, "/../") ||
+		strings.HasSuffix(normalized, "/..") {
+		return false
+	}
+	base := filepath.Base(normalized)
+	ext := filepath.Ext(base)
+	if len(ext) <= 1 || strings.ContainsAny(ext, "*?[") {
+		return false
+	}
+
+	prefix := normalized[:strings.IndexAny(normalized, "*?[")]
+	dir := "."
+	if slash := strings.LastIndex(prefix, "/"); slash >= 0 {
+		dir = prefix[:slash]
+		if dir == "" {
+			dir = "."
+		}
+	}
+	return ev.safePath(filepath.FromSlash(dir), cwd)
+}
+
 func (ev evaluator) safeExistingPath(path string, cwd string) bool {
 	if unsafePathPattern(path) || LooksSensitive(path) {
 		return false

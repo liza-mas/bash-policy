@@ -30,6 +30,12 @@ func (ev evaluator) evalSafetyFloor(argv []string, cwd string) Result {
 		if argvHasSensitiveValue(rest) {
 			return result(DecisionDeny, "git path targets a credential or secret location", argv)
 		}
+		if len(rest) > 0 && rest[0] == "grep" {
+			if floor := ev.evalGitGrepSafetyFloor(rest[1:], nextCWD, argv); floor.Decision != "" {
+				return floor
+			}
+			return Result{}
+		}
 		for _, arg := range rest[1:] {
 			if path, ok := gitObjectPathOperand(arg); ok {
 				if gitObjectPathPathSensitive(path) {

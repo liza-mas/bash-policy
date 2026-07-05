@@ -289,6 +289,8 @@ func TestEvaluateNormalizesBareSafePathOperandsByCommandProfile(t *testing.T) {
 		{command: "git check-ignore -v .bash-policy-dry-run.jsonl", want: "git check-ignore -v <safe-path>"},
 		{command: "git diff --cached README.md", want: "git diff --cached <safe-path>"},
 		{command: "git diff HEAD README.md", want: "git diff HEAD <safe-path>"},
+		{command: `git grep -n -E "func Test" -- *.go`, want: "git grep -n -E <pattern> -- <safe-path>"},
+		{command: `git grep -n internal/bashpolicy/policy.go -- *.go *.tmpl *.md internal/bashpolicy/policy.go`, want: "git grep -n <pattern> -- <safe-path> <safe-path> <safe-path> <safe-path>"},
 		{command: `grep -n "CommandRule\|policyCommandShape" internal/bashpolicy/policy.go`, want: "grep -n <pattern> <safe-path>"},
 		{command: `grep -nE 'func \(ev evaluator\)' internal/bashpolicy/policy.go`, want: "grep -nE <pattern> <safe-path>"},
 		{command: `grep -nF "genericCommandShape(" internal/bashpolicy/policy.go`, want: "grep -nF <pattern> <safe-path>"},
@@ -465,6 +467,7 @@ func TestEvaluateProjectPolicyRulesAfterSafetyFloor(t *testing.T) {
 		{Kind: "command-shape", Identity: "grep -HRefunc <pattern>", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "grep -- <pattern> <safe-path>", Decision: DecisionAllow},
 		{Kind: "command-shape", Identity: "grep <redacted> <safe-path>", Decision: DecisionAllow},
+		{Kind: "command-shape", Identity: "git grep -n -E <pattern> -- <safe-path>...", Decision: DecisionAllow},
 	}}
 
 	allowed := Evaluate(Request{Command: "gh pr view 123", ProjectRoot: root, Policy: policy})
@@ -584,6 +587,52 @@ func TestEvaluateProjectPolicyRulesAfterSafetyFloor(t *testing.T) {
 	grepSensitivePattern := Evaluate(Request{Command: "grep sk-live-abc123 internal/bashpolicy/policy.go", ProjectRoot: root, Policy: policy})
 	if grepSensitivePattern.Decision != DecisionDeny {
 		t.Fatalf("grep sensitive pattern decision = %s, want deny; result=%+v", grepSensitivePattern.Decision, grepSensitivePattern)
+	}
+
+	gitGrepGlob := Evaluate(Request{Command: `git grep -n -E "func Test" -- *.go`, ProjectRoot: root, Policy: policy})
+	if gitGrepGlob.Decision != DecisionAllow {
+		t.Fatalf("git grep glob policy decision = %s, want allow; result=%+v", gitGrepGlob.Decision, gitGrepGlob)
+	}
+	if gitGrepGlob.CommandShape != "git grep -n -E <pattern> -- <safe-path>" {
+		t.Fatalf("git grep glob shape = %q, want normalized shape", gitGrepGlob.CommandShape)
+	}
+
+	gitGrepBroadGlob := Evaluate(Request{Command: `git grep -n -E "func Test" -- *`, ProjectRoot: root, Policy: policy})
+	if gitGrepBroadGlob.Decision != DecisionManual {
+		t.Fatalf("git grep broad glob decision = %s, want manual; result=%+v", gitGrepBroadGlob.Decision, gitGrepBroadGlob)
+	}
+
+	gitGrepRevision := Evaluate(Request{Command: `git grep -n "func Test" HEAD`, ProjectRoot: root, Policy: policy})
+	if gitGrepRevision.Decision != DecisionManual {
+		t.Fatalf("git grep revision decision = %s, want manual; result=%+v", gitGrepRevision.Decision, gitGrepRevision)
+	}
+
+	for _, command := range []string{
+		`git grep -O less -e "func Test"`,
+		`git grep -nO "func Test"`,
+		`git grep --open-files-in-pager=less -e "func Test"`,
+	} {
+		t.Run(command, func(t *testing.T) {
+			got := Evaluate(Request{Command: command, ProjectRoot: root, Policy: policy})
+			if got.Decision != DecisionManual {
+				t.Fatalf("decision = %s, want manual; result=%+v", got.Decision, got)
+			}
+		})
+	}
+
+	for _, command := range []string{
+		`git grep -nefunc -- *.go`,
+		`git grep -nfpatterns.txt -- *.go`,
+	} {
+		t.Run(command, func(t *testing.T) {
+			got := Evaluate(Request{Command: command, ProjectRoot: root, Policy: policy})
+			if got.Decision != DecisionManual {
+				t.Fatalf("decision = %s, want manual; result=%+v", got.Decision, got)
+			}
+			if got.CommandShape != "" {
+				t.Fatalf("command shape = %q, want empty shape for unsafe cluster", got.CommandShape)
+			}
+		})
 	}
 }
 
@@ -1208,6 +1257,44 @@ func TestBuildCandidatesUsesCanonicalGrepPatternOperands(t *testing.T) {
 	} {
 		if _, ok := got[unexpected]; ok {
 			t.Fatalf("unexpected grep candidate %q in %+v", unexpected, candidates.Candidates)
+		}
+	}
+}
+
+func TestBuildCandidatesRenormalizesGitGrepPathspecs(t *testing.T) {
+	root := t.TempDir()
+	events := []Event{{
+		Provider:     "claude",
+		Decision:     DecisionManual,
+		Summary:      `git grep -n -E "liza (agent|get|add-tasks)" -- *.go`,
+		CommandShape: `git grep -n -E "liza (agent|get|add-tasks)" -- *.go`,
+	}, {
+		Provider:     "claude",
+		Decision:     DecisionManual,
+		Summary:      `git grep -n internal/bashpolicy/policy.go -- *.go *.tmpl *.md internal/bashpolicy/policy.go`,
+		CommandShape: `git grep -n <safe-path> -- *.go *.tmpl *.md <safe-path>`,
+	}}
+
+	candidates := BuildCandidates("claude", nil, nil, events, root)
+	got := map[string]bool{}
+	for _, candidate := range candidates.Candidates {
+		got[candidate.Identity] = true
+	}
+
+	for _, want := range []string{
+		"git grep -n -E <pattern> -- <safe-path>",
+		"git grep -n <pattern> -- <safe-path> <safe-path> <safe-path> <safe-path>",
+	} {
+		if !got[want] {
+			t.Fatalf("missing normalized git grep candidate %q in %+v", want, candidates.Candidates)
+		}
+	}
+	for _, unexpected := range []string{
+		`git grep -n -E "liza (agent|get|add-tasks)" -- *.go`,
+		"git grep -n <safe-path> -- *.go *.tmpl *.md <safe-path>",
+	} {
+		if got[unexpected] {
+			t.Fatalf("unexpected literal git grep candidate %q in %+v", unexpected, candidates.Candidates)
 		}
 	}
 }

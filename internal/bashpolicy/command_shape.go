@@ -256,6 +256,12 @@ func (ev evaluator) gitCommandShape(argv []string, cwd string) string {
 		out = append(out, ev.pathspecCommandArgsShape(rest, nextCWD, gitFlagNeedsValueForShape, false)...)
 	case "diff":
 		out = append(out, ev.pathspecCommandArgsShape(rest, nextCWD, gitFlagNeedsValueForShape, true)...)
+	case "grep":
+		grepArgs, ok := ev.gitGrepCommandArgsShape(rest, nextCWD)
+		if !ok {
+			return ""
+		}
+		out = append(out, grepArgs...)
 	case "log", "show":
 		out = append(out, ev.gitLogShowCommandArgsShape(rest, nextCWD)...)
 	default:
@@ -402,6 +408,13 @@ func (ev evaluator) renderCommandShapeArg(arg string, cwd string, pathOperand bo
 	default:
 		return renderCommandShapeToken(arg)
 	}
+}
+
+func (ev evaluator) renderGitPathspecShapeArg(arg string, cwd string) string {
+	if ev.safeGitPathspec(arg, cwd) {
+		return "<safe-path>"
+	}
+	return ev.renderCommandShapeArg(arg, cwd, true)
 }
 
 func (ev evaluator) renderAmbiguousPathspecArg(arg string, cwd string) string {
