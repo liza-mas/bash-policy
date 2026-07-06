@@ -26,6 +26,12 @@ func TestRunHelpDoesNotRequirePolicyInput(t *testing.T) {
 	if !strings.Contains(stdout.String(), "bash-policy --version") {
 		t.Fatalf("stdout = %q, want usage", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "bash-policy report [--policy-artifact-root DIR] [--claude-settings PATH]") {
+		t.Fatalf("stdout = %q, want provider-agnostic report usage", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "bash-policy report [--provider") {
+		t.Fatalf("stdout = %q, want report usage without provider filter", stdout.String())
+	}
 	if stderr.String() != "" {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
@@ -102,6 +108,38 @@ func TestRunEvaluateCLIJSON(t *testing.T) {
 	}
 	if result.Decision != bashpolicy.DecisionAllow {
 		t.Fatalf("decision = %s, want allow; result=%+v", result.Decision, result)
+	}
+}
+
+func TestRunEvaluateCursorDryRunAllowsMalformedPolicy(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, bashpolicy.PolicyFileName), []byte("rules: [\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := runWithBuildIdentity(
+		[]string{"evaluate", "--provider", "cursor", "--mode", "dry-run", "--policy-artifact-root", root, "--safe-root", root},
+		strings.NewReader(`{"command":"git status --short"}`),
+		&stdout,
+		&stderr,
+		version.BuildIdentity{},
+	)
+
+	if got != statusOK {
+		t.Fatalf("runWithBuildIdentity() status = %d, want %d; stderr=%s", got, statusOK, stderr.String())
+	}
+	var hookOutput map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &hookOutput); err != nil {
+		t.Fatalf("invalid Cursor hook output: %v\n%s", err, stdout.String())
+	}
+	if got := hookOutput["permission"]; got != "allow" {
+		t.Fatalf("permission = %v, want allow for dry-run setup failure; output=%s", got, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "parse bash policy") {
+		t.Fatalf("stderr missing policy parse failure:\n%s", stderr.String())
 	}
 }
 
@@ -211,5 +249,28 @@ func TestRunReportUsesArtifactLogForTerminalStdin(t *testing.T) {
 	}
 	if report.Total != 1 {
 		t.Fatalf("report total = %d, want 1: %+v", report.Total, report)
+	}
+}
+
+func TestRunReportRejectsProviderFlag(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := runWithBuildIdentity(
+		[]string{"report", "--provider", "cursor"},
+		strings.NewReader(""),
+		&stdout,
+		&stderr,
+		version.BuildIdentity{},
+	)
+
+	if got != statusUsage {
+		t.Fatalf("runWithBuildIdentity() status = %d, want %d", got, statusUsage)
+	}
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "flag provided but not defined") {
+		t.Fatalf("stderr missing undefined flag diagnostic:\n%s", stderr.String())
 	}
 }

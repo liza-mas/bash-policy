@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/liza-mas/bash-policy/internal/bashpolicy"
 	"github.com/liza-mas/bash-policy/internal/embedded"
@@ -29,6 +30,17 @@ func updateCodexBashPolicyActivation(projectRoot string, policyRoot string, hook
 	}
 	command := embedded.ProviderHookCommand(hookCommand, "codex", activation, policyRoot)
 	upsertHookCommand(doc, "PreToolUse", "^Bash$", "codex", activation, command, commandOverride, "Evaluating Bash command policy")
+	return writeJSONObject(hooksPath, doc)
+}
+
+func updateCursorBashPolicyActivation(projectRoot string, policyRoot string, hookCommand string, activation string, commandOverride bool) error {
+	hooksPath := filepath.Join(projectRoot, ".cursor", "hooks.json")
+	doc, err := readJSONObject(hooksPath)
+	if err != nil {
+		return err
+	}
+	command := embedded.ProviderHookCommand(hookCommand, "cursor", activation, policyRoot)
+	upsertCursorHookCommand(doc, "beforeShellExecution", "cursor", activation, command, commandOverride)
 	return writeJSONObject(hooksPath, doc)
 }
 
@@ -81,6 +93,25 @@ func upsertHookCommand(doc map[string]any, event string, matcher string, provide
 	hooks[event] = entries
 }
 
+func upsertCursorHookCommand(doc map[string]any, event string, provider string, activation string, command string, commandOverride bool) {
+	if replaceExistingHookActivation(doc, provider, activation, command, commandOverride) {
+		pruneLegacyCursorHookCommands(doc)
+		return
+	}
+	pruneLegacyCursorHookCommands(doc)
+	hooks, _ := doc["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+		doc["hooks"] = hooks
+	}
+	entries, _ := hooks[event].([]any)
+	entries = append(entries, map[string]any{
+		"command":    command,
+		"failClosed": true,
+	})
+	hooks[event] = entries
+}
+
 func replaceExistingHookActivation(value any, provider string, activation string, command string, commandOverride bool) bool {
 	replaced := false
 	var walk func(any)
@@ -106,6 +137,54 @@ func replaceExistingHookActivation(value any, provider string, activation string
 	}
 	walk(value)
 	return replaced
+}
+
+func pruneLegacyCursorHookCommands(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if list, ok := child.([]any); ok {
+				filtered := make([]any, 0, len(list))
+				for _, item := range list {
+					if !containsLegacyCursorHookCommand(item) {
+						filtered = append(filtered, item)
+					}
+				}
+				typed[key] = filtered
+				continue
+			}
+			pruneLegacyCursorHookCommands(child)
+		}
+	case []any:
+		for _, child := range typed {
+			pruneLegacyCursorHookCommands(child)
+		}
+	}
+}
+
+func containsLegacyCursorHookCommand(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if command, ok := typed["command"].(string); ok && isLegacyCursorHookCommand(command) {
+			return true
+		}
+		for _, child := range typed {
+			if containsLegacyCursorHookCommand(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if containsLegacyCursorHookCommand(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isLegacyCursorHookCommand(command string) bool {
+	return strings.Contains(command, ".cursor/hooks/cursor-bash-policy.sh")
 }
 
 func isBashPolicyProviderCommand(command string, provider string) bool {

@@ -28,12 +28,12 @@ const helpText = `Description:
 Usage:
   bash-policy --help
   bash-policy --version
-  bash-policy init [--provider claude|codex|all] [--policy-artifact-root DIR] [--command COMMAND]
-  bash-policy evaluate [--provider claude|codex] [--mode on|dry-run|off] --policy-artifact-root DIR --safe-root DIR
-  bash-policy activation on|dry-run|off [--provider claude|codex|all] [--policy-artifact-root DIR] [--command COMMAND]
+  bash-policy init [--provider claude|codex|cursor|all] [--policy-artifact-root DIR] [--command COMMAND]
+  bash-policy evaluate [--provider claude|codex|cursor] [--mode on|dry-run|off] --policy-artifact-root DIR --safe-root DIR
+  bash-policy activation on|dry-run|off [--provider claude|codex|cursor|all] [--policy-artifact-root DIR] [--command COMMAND]
   bash-policy validate [--policy-artifact-root DIR]
-  bash-policy report [--provider claude|codex] [--policy-artifact-root DIR] [--claude-settings PATH]
-  bash-policy export [--provider claude|codex] [--policy-artifact-root DIR] [--claude-settings PATH]
+  bash-policy report [--policy-artifact-root DIR] [--claude-settings PATH]
+  bash-policy export [--provider claude|codex|cursor] [--policy-artifact-root DIR] [--claude-settings PATH]
   bash-policy codex-readiness [--json]
 
 Exit codes:
@@ -90,7 +90,7 @@ func runWithBuildIdentity(args []string, stdin io.Reader, stdout io.Writer, stde
 
 func runInit(args []string, stdin io.Reader, stdout io.Writer) error {
 	fs := newFlagSet("init")
-	provider := fs.String("provider", "all", "provider hook to install: claude, codex, or all")
+	provider := fs.String("provider", "all", "provider hook to install: claude, codex, cursor, or all")
 	policyRoot := fs.String("policy-artifact-root", "", "durable root for bash policy artifacts")
 	command := fs.String("command", "", "bash-policy command to write into provider hooks")
 	if err := fs.Parse(args); err != nil {
@@ -124,7 +124,7 @@ func runInit(args []string, stdin io.Reader, stdout io.Writer) error {
 
 func runEvaluate(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
 	fs := newFlagSet("evaluate")
-	provider := fs.String("provider", "claude", "provider adapter: claude or codex")
+	provider := fs.String("provider", "claude", "provider adapter: claude, codex, or cursor")
 	mode := fs.String("mode", "dry-run", "activation: on, dry-run, or off")
 	policyRoot := fs.String("policy-artifact-root", "", "durable root for bash policy artifacts")
 	var safeRoots stringArrayFlag
@@ -152,7 +152,7 @@ func runActivation(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 	activation := args[0]
 	fs := newFlagSet("activation")
-	provider := fs.String("provider", "all", "provider hook to update: claude, codex, or all")
+	provider := fs.String("provider", "all", "provider hook to update: claude, codex, cursor, or all")
 	policyRoot := fs.String("policy-artifact-root", "", "durable root for bash policy artifacts")
 	commandFlag := fs.String("command", "", "override bash-policy command written into provider hooks")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -199,7 +199,6 @@ func runValidate(args []string, stdout io.Writer) error {
 
 func runReport(args []string, stdin io.Reader, stdout io.Writer) error {
 	fs := newFlagSet("report")
-	provider := fs.String("provider", "claude", "provider report target")
 	policyRoot := fs.String("policy-artifact-root", "", "durable root for bash policy artifacts")
 	claudeSettings := fs.String("claude-settings", "", "Claude settings JSON to seed Bash permission migration rows")
 	if err := fs.Parse(args); err != nil {
@@ -209,7 +208,6 @@ func runReport(args []string, stdin io.Reader, stdout io.Writer) error {
 		return fmt.Errorf("report does not accept positional arguments")
 	}
 	return commands.BashPolicyReportCommand(optionalStdinReader(stdin), stdout, commands.BashPolicyReportOptions{
-		Provider:           *provider,
 		PolicyArtifactRoot: *policyRoot,
 		ClaudeSettings:     *claudeSettings,
 	})
@@ -217,7 +215,7 @@ func runReport(args []string, stdin io.Reader, stdout io.Writer) error {
 
 func runExport(args []string, stdout io.Writer) error {
 	fs := newFlagSet("export")
-	provider := fs.String("provider", "claude", "provider export target")
+	provider := fs.String("provider", "claude", "provider export target: claude, codex, or cursor")
 	policyRoot := fs.String("policy-artifact-root", "", "durable root for bash policy artifacts")
 	claudeSettings := fs.String("claude-settings", "", "Claude settings JSON to seed Bash permission-family candidates")
 	if err := fs.Parse(args); err != nil {

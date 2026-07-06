@@ -23,7 +23,6 @@ type BashPolicyEvaluateOptions struct {
 }
 
 type BashPolicyReportOptions struct {
-	Provider           string
 	PolicyArtifactRoot string
 	ClaudeSettings     string
 }
@@ -75,11 +74,30 @@ func BashPolicyInitCommand(output io.Writer, projectRoot string, opts BashPolicy
 			return err
 		}
 	}
+	if provider == "cursor" || provider == "all" {
+		if err := embedded.WriteCursorProjectHooks(projectRoot, policyRoot, opts.Command, opts.Reader); err != nil {
+			return err
+		}
+	}
 	fmt.Fprintf(output, "Bash policy initialized for %s\n", provider)
 	return nil
 }
 
 func BashPolicyEvaluateCommand(input io.Reader, output io.Writer, opts BashPolicyEvaluateOptions) error {
+	activation, err := bashpolicy.NormalizeActivation(opts.Mode)
+	if err != nil {
+		return err
+	}
+	provider, err := normalizeProvider(opts.Provider, false)
+	if err != nil {
+		return err
+	}
+	if activation == bashpolicy.ActivationOff {
+		if provider == "cursor" {
+			return writeCursorHookOutput(output, true, "")
+		}
+		return nil
+	}
 	data, err := io.ReadAll(input)
 	if err != nil {
 		return fmt.Errorf("read hook input: %w", err)
@@ -88,26 +106,28 @@ func BashPolicyEvaluateCommand(input io.Reader, output io.Writer, opts BashPolic
 	if err != nil {
 		return err
 	}
-	activation, err := bashpolicy.NormalizeActivation(opts.Mode)
-	if err != nil {
-		return err
-	}
-	if activation == bashpolicy.ActivationOff {
-		return nil
-	}
 	policyRoot, rootErr := bashpolicy.ResolveRequiredPolicyArtifactRoot(opts.PolicyArtifactRoot)
 	if rootErr != nil {
 		if opts.Diagnostics != nil {
 			fmt.Fprintf(opts.Diagnostics, "bash policy disabled: %v\n", rootErr)
 		}
+		if provider == "cursor" {
+			return writeCursorSetupFailureOutput(output, activation)
+		}
 		return nil
 	}
 	policy, err := bashpolicy.LoadPolicy(policyRoot)
 	if err != nil {
+		if provider == "cursor" {
+			return handleCursorSetupFailure(output, opts.Diagnostics, activation, err)
+		}
 		return err
 	}
-	claudePermissions, err := readClaudePermissions(opts.Provider, policyRoot)
+	claudePermissions, err := readClaudePermissions(provider, policyRoot)
 	if err != nil {
+		if provider == "cursor" {
+			return handleCursorSetupFailure(output, opts.Diagnostics, activation, err)
+		}
 		return err
 	}
 	result := bashpolicy.Evaluate(bashpolicy.Request{
@@ -123,7 +143,7 @@ func BashPolicyEvaluateCommand(input io.Reader, output io.Writer, opts BashPolic
 		return json.NewEncoder(output).Encode(result)
 	}
 	if shouldWriteDiagnostics(activation) && policyRoot != "" {
-		if err := bashpolicy.AppendDryRunEvent(policyRoot, opts.Provider, activation, result); err != nil {
+		if err := bashpolicy.AppendDryRunEvent(policyRoot, provider, activation, result); err != nil {
 			return err
 		}
 	}
@@ -132,7 +152,7 @@ func BashPolicyEvaluateCommand(input io.Reader, output io.Writer, opts BashPolic
 			return fmt.Errorf("write bash policy diagnostics: %w", err)
 		}
 	}
-	return writeProviderHookOutput(output, opts.Provider, activation, result)
+	return writeProviderHookOutput(output, provider, activation, result)
 }
 
 func BashPolicyReportCommand(input io.Reader, output io.Writer, opts BashPolicyReportOptions) error {
@@ -243,6 +263,11 @@ func BashPolicyActivationCommand(output io.Writer, projectRoot string, opts Bash
 			return err
 		}
 	}
+	if provider == "cursor" || provider == "all" {
+		if err := updateCursorBashPolicyActivation(projectRoot, policyRoot, opts.Command, activation, opts.CommandOverride); err != nil {
+			return err
+		}
+	}
 	fmt.Fprintf(output, "Bash policy activation set to %s for %s\n", activation, provider)
 	return nil
 }
@@ -268,6 +293,9 @@ func BashPolicyCodexReadinessCommand(output io.Writer, projectRoot string, jsonO
 func writeProviderHookOutput(output io.Writer, provider string, mode string, result bashpolicy.Result) error {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	mode = strings.ToLower(strings.TrimSpace(mode))
+	if provider == "cursor" {
+		return writeCursorHookOutput(output, mode != bashpolicy.ActivationOn || result.Decision == bashpolicy.DecisionAllow || result.Decision == bashpolicy.DecisionNoOp, "")
+	}
 	// Deny is logged but not provider-enforced yet; this hook only emits verified Claude allow decisions.
 	if provider == "claude" && mode == bashpolicy.ActivationOn && result.Decision == bashpolicy.DecisionAllow {
 		shape := result.CommandShape
@@ -285,6 +313,34 @@ func writeProviderHookOutput(output io.Writer, provider string, mode string, res
 		return json.NewEncoder(output).Encode(payload)
 	}
 	return nil
+}
+
+func writeCursorHookOutput(output io.Writer, allowed bool, agentMessage string) error {
+	payload := map[string]any{
+		"continue": true,
+	}
+	if allowed {
+		payload["permission"] = "allow"
+	} else {
+		payload["permission"] = "deny"
+		payload["user_message"] = "Cursor shell execution blocked by bash-policy."
+		if agentMessage == "" {
+			agentMessage = "The bash-policy Cursor hook did not allow this shell command. Review the command or adjust .bash-policy.yaml if it should be allowed."
+		}
+		payload["agent_message"] = agentMessage
+	}
+	return json.NewEncoder(output).Encode(payload)
+}
+
+func handleCursorSetupFailure(output io.Writer, diagnostics io.Writer, activation string, err error) error {
+	if diagnostics != nil {
+		fmt.Fprintf(diagnostics, "bash policy setup failed: %v\n", err)
+	}
+	return writeCursorSetupFailureOutput(output, activation)
+}
+
+func writeCursorSetupFailureOutput(output io.Writer, activation string) error {
+	return writeCursorHookOutput(output, activation != bashpolicy.ActivationOn, "The bash-policy Cursor hook could not load policy artifacts. Repair .bash-policy.yaml or hook configuration before enabling enforcement.")
 }
 
 func shouldWriteDiagnostics(mode string) bool {
@@ -324,7 +380,8 @@ func firstSafeRoot(roots []string) string {
 }
 
 func readClaudePermissions(provider string, policyRoot string) (claudeSettingsPermissions, error) {
-	if strings.ToLower(strings.TrimSpace(provider)) != "claude" || policyRoot == "" {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if (provider != "claude" && provider != "cursor") || policyRoot == "" {
 		return claudeSettingsPermissions{}, nil
 	}
 	globalPermissions, err := readClaudeSettingsPermissions(userClaudeSettingsPath(), false)
@@ -436,11 +493,11 @@ func normalizeProvider(provider string, allowAll bool) (string, error) {
 		}
 		return "claude", nil
 	}
-	if normalized == "claude" || normalized == "codex" || allowAll && normalized == "all" {
+	if normalized == "claude" || normalized == "codex" || normalized == "cursor" || (allowAll && normalized == "all") {
 		return normalized, nil
 	}
 	if allowAll {
-		return "", fmt.Errorf("unsupported bash policy provider %q (want claude, codex, or all)", provider)
+		return "", fmt.Errorf("unsupported bash policy provider %q (want claude, codex, cursor, or all)", provider)
 	}
-	return "", fmt.Errorf("unsupported bash policy provider %q (want claude or codex)", provider)
+	return "", fmt.Errorf("unsupported bash policy provider %q (want claude, codex, or cursor)", provider)
 }

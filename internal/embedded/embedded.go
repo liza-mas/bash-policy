@@ -110,6 +110,34 @@ func WriteCodexProjectHooks(projectRoot string, policyRoot string, command strin
 	return nil
 }
 
+// WriteCursorProjectHooks writes or merges standalone project-local Cursor hook
+// configuration. Existing hooks are merged only after user confirmation.
+func WriteCursorProjectHooks(projectRoot string, policyRoot string, command string, reader *bufio.Reader) error {
+	if reader == nil {
+		reader = bufio.NewReader(os.Stdin)
+	}
+
+	cursorDir := filepath.Join(projectRoot, ".cursor")
+	if err := ensureProviderDir(cursorDir); err != nil {
+		return fmt.Errorf("failed to create .cursor directory: %w", err)
+	}
+
+	hooksOutput, installed, err := renderCursorHooksJSON(filepath.Join(cursorDir, "hooks.json"), policyRoot, command, reader)
+	if err != nil {
+		return err
+	}
+	if !installed {
+		return nil
+	}
+	if err := os.WriteFile(filepath.Join(cursorDir, "hooks.json"), hooksOutput, 0o644); err != nil {
+		return fmt.Errorf("failed to write Cursor hooks.json: %w", err)
+	}
+	if err := ensureBashPolicyArtifactExcludes(policyRoot); err != nil {
+		return fmt.Errorf("failed to exclude Bash policy artifacts: %w", err)
+	}
+	return nil
+}
+
 func managedClaudeSettings(policyRoot string, command string) map[string]any {
 	return map[string]any{
 		"hooks": map[string]any{
@@ -122,6 +150,20 @@ func managedCodexHooks(policyRoot string, command string) map[string]any {
 	return map[string]any{
 		"hooks": map[string]any{
 			"PreToolUse": []any{providerHookEntry("^Bash$", ProviderHookCommand(command, "codex", "dry-run", policyRoot), "Evaluating Bash command policy")},
+		},
+	}
+}
+
+func managedCursorHooks(policyRoot string, command string) map[string]any {
+	return map[string]any{
+		"version": float64(1),
+		"hooks": map[string]any{
+			"beforeShellExecution": []any{
+				map[string]any{
+					"command":    ProviderHookCommand(command, "cursor", "dry-run", policyRoot),
+					"failClosed": true,
+				},
+			},
 		},
 	}
 }
@@ -240,33 +282,37 @@ func appendMissingExcludeEntries(excludePath string, entries []string) error {
 }
 
 func ensureCodexDir(codexDir string) error {
-	info, err := os.Lstat(codexDir)
+	return ensureProviderDir(codexDir)
+}
+
+func ensureProviderDir(dir string) error {
+	info, err := os.Lstat(dir)
 	if err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
-			targetInfo, targetErr := os.Stat(codexDir)
+			targetInfo, targetErr := os.Stat(dir)
 			if targetErr == nil && targetInfo.IsDir() {
 				return nil
 			}
 			if targetErr != nil {
-				return fmt.Errorf("%s exists as symlink: %w", codexDir, targetErr)
+				return fmt.Errorf("%s exists as symlink: %w", dir, targetErr)
 			}
-			return fmt.Errorf("%s exists as symlink and is not a directory", codexDir)
+			return fmt.Errorf("%s exists as symlink and is not a directory", dir)
 		}
 		if info.IsDir() {
 			return nil
 		}
 		if info.Mode().IsRegular() && info.Size() == 0 {
-			if err := os.Remove(codexDir); err != nil {
+			if err := os.Remove(dir); err != nil {
 				return err
 			}
-			return os.MkdirAll(codexDir, 0o755)
+			return os.MkdirAll(dir, 0o755)
 		}
-		return fmt.Errorf("%s exists and is not a directory", codexDir)
+		return fmt.Errorf("%s exists and is not a directory", dir)
 	}
 	if !os.IsNotExist(err) {
 		return err
 	}
-	return os.MkdirAll(codexDir, 0o755)
+	return os.MkdirAll(dir, 0o755)
 }
 
 func prepareCodexHooksFeature(configPath string, reader *bufio.Reader) (bool, string, error) {
@@ -342,6 +388,34 @@ func renderCodexHooksJSON(hooksPath string, policyRoot string, command string, r
 	output, err := json.MarshalIndent(finalHooks, "", "  ")
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to marshal Codex hooks: %w", err)
+	}
+	return append(output, '\n'), true, nil
+}
+
+func renderCursorHooksJSON(hooksPath string, policyRoot string, command string, reader *bufio.Reader) ([]byte, bool, error) {
+	managedHooks := managedCursorHooks(policyRoot, command)
+	finalHooks := managedHooks
+	if existingData, err := os.ReadFile(hooksPath); err == nil {
+		ok, err := confirmMerge("Should bash-policy hooks be merged into .cursor/hooks.json? (y/n): ", reader)
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			return nil, false, nil
+		}
+
+		var existingHooks map[string]any
+		if err := json.Unmarshal(existingData, &existingHooks); err != nil {
+			return nil, false, fmt.Errorf("failed to parse existing Cursor hooks: %w", err)
+		}
+		finalHooks = mergeSettings(managedHooks, existingHooks)
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, false, fmt.Errorf("failed to read Cursor hooks: %w", err)
+	}
+
+	output, err := json.MarshalIndent(finalHooks, "", "  ")
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to marshal Cursor hooks: %w", err)
 	}
 	return append(output, '\n'), true, nil
 }
@@ -483,6 +557,9 @@ func unionHookEntries(managed, existing []any) []any {
 	}
 	for _, entry := range existing {
 		skip := false
+		if managedProviders["cursor"] && hasLegacyCursorHookCommand(entry) {
+			skip = true
+		}
 		for _, provider := range bashPolicyProviders(entry) {
 			if managedProviders[provider] {
 				skip = true
@@ -496,16 +573,28 @@ func unionHookEntries(managed, existing []any) []any {
 	return result
 }
 
+func hasLegacyCursorHookCommand(entry any) bool {
+	for _, command := range hookCommands(entry) {
+		if strings.Contains(command, ".cursor/hooks/cursor-bash-policy.sh") {
+			return true
+		}
+	}
+	return false
+}
+
 func hookCommands(entry any) []string {
 	entryMap, ok := entry.(map[string]any)
 	if !ok {
 		return nil
 	}
+	commands := []string{}
+	if command, ok := entryMap["command"].(string); ok {
+		commands = append(commands, command)
+	}
 	hooks, ok := entryMap["hooks"].([]any)
 	if !ok {
-		return nil
+		return commands
 	}
-	commands := make([]string, 0, len(hooks))
 	for _, hook := range hooks {
 		hookMap, ok := hook.(map[string]any)
 		if !ok {

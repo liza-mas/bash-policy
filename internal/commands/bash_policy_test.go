@@ -101,6 +101,210 @@ func TestBashPolicyEvaluateCommandClaudeAllowOutput(t *testing.T) {
 	}
 }
 
+func TestBashPolicyEvaluateCommandCursorDryRunAllowsAndLogs(t *testing.T) {
+	isolateClaudeHome(t)
+	root := t.TempDir()
+	payload := `{"command":"rm -rf ` + root + `/tmp"}`
+
+	var output bytes.Buffer
+	var diagnostics bytes.Buffer
+	err := BashPolicyEvaluateCommand(strings.NewReader(payload), &output, BashPolicyEvaluateOptions{
+		Provider:           "cursor",
+		Mode:               "dry-run",
+		PolicyArtifactRoot: root,
+		SafeRoots:          []string{root},
+		Diagnostics:        &diagnostics,
+	})
+	if err != nil {
+		t.Fatalf("BashPolicyEvaluateCommand failed: %v", err)
+	}
+
+	var hookOutput map[string]any
+	if err := json.Unmarshal(output.Bytes(), &hookOutput); err != nil {
+		t.Fatalf("invalid Cursor hook output: %v\n%s", err, output.String())
+	}
+	if got := hookOutput["permission"]; got != "allow" {
+		t.Fatalf("permission = %v, want allow in dry-run; output=%s", got, output.String())
+	}
+	var result bashpolicy.Result
+	if err := json.Unmarshal(diagnostics.Bytes(), &result); err != nil {
+		t.Fatalf("invalid diagnostic result: %v\n%s", err, diagnostics.String())
+	}
+	if result.Decision == bashpolicy.DecisionAllow {
+		t.Fatalf("dry-run diagnostic decision = allow, want unsafe command signal; result=%+v", result)
+	}
+}
+
+func TestBashPolicyEvaluateCommandCursorOffAllowsMalformedPayload(t *testing.T) {
+	isolateClaudeHome(t)
+
+	var output bytes.Buffer
+	err := BashPolicyEvaluateCommand(strings.NewReader(`{"not_command":`), &output, BashPolicyEvaluateOptions{
+		Provider: "cursor",
+		Mode:     "off",
+	})
+	if err != nil {
+		t.Fatalf("BashPolicyEvaluateCommand failed: %v", err)
+	}
+
+	var hookOutput map[string]any
+	if err := json.Unmarshal(output.Bytes(), &hookOutput); err != nil {
+		t.Fatalf("invalid Cursor hook output: %v\n%s", err, output.String())
+	}
+	if got := hookOutput["permission"]; got != "allow" {
+		t.Fatalf("permission = %v, want allow for off mode; output=%s", got, output.String())
+	}
+}
+
+func TestBashPolicyEvaluateCommandCursorDryRunAllowsMissingPolicyRoot(t *testing.T) {
+	isolateClaudeHome(t)
+	t.Setenv("BASH_POLICY_ARTIFACT_ROOT", "")
+
+	var output bytes.Buffer
+	var diagnostics bytes.Buffer
+	err := BashPolicyEvaluateCommand(strings.NewReader(`{"command":"git status --short"}`), &output, BashPolicyEvaluateOptions{
+		Provider:    "cursor",
+		Mode:        "dry-run",
+		Diagnostics: &diagnostics,
+	})
+	if err != nil {
+		t.Fatalf("BashPolicyEvaluateCommand failed: %v", err)
+	}
+
+	var hookOutput map[string]any
+	if err := json.Unmarshal(output.Bytes(), &hookOutput); err != nil {
+		t.Fatalf("invalid Cursor hook output: %v\n%s", err, output.String())
+	}
+	if got := hookOutput["permission"]; got != "allow" {
+		t.Fatalf("permission = %v, want allow for dry-run setup failure; output=%s", got, output.String())
+	}
+	if !strings.Contains(diagnostics.String(), "policy-artifact-root is required") {
+		t.Fatalf("diagnostics missing setup failure:\n%s", diagnostics.String())
+	}
+}
+
+func TestBashPolicyEvaluateCommandCursorDryRunAllowsMalformedPolicy(t *testing.T) {
+	isolateClaudeHome(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, bashpolicy.PolicyFileName), []byte("rules: [\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	var diagnostics bytes.Buffer
+	err := BashPolicyEvaluateCommand(strings.NewReader(`{"command":"git status --short"}`), &output, BashPolicyEvaluateOptions{
+		Provider:           "cursor",
+		Mode:               "dry-run",
+		PolicyArtifactRoot: root,
+		SafeRoots:          []string{root},
+		Diagnostics:        &diagnostics,
+	})
+	if err != nil {
+		t.Fatalf("BashPolicyEvaluateCommand failed: %v", err)
+	}
+
+	var hookOutput map[string]any
+	if err := json.Unmarshal(output.Bytes(), &hookOutput); err != nil {
+		t.Fatalf("invalid Cursor hook output: %v\n%s", err, output.String())
+	}
+	if got := hookOutput["permission"]; got != "allow" {
+		t.Fatalf("permission = %v, want allow for dry-run setup failure; output=%s", got, output.String())
+	}
+	if !strings.Contains(diagnostics.String(), "parse bash policy") {
+		t.Fatalf("diagnostics missing policy parse failure:\n%s", diagnostics.String())
+	}
+}
+
+func TestBashPolicyEvaluateCommandCursorOnDeniesManualDecision(t *testing.T) {
+	isolateClaudeHome(t)
+	root := t.TempDir()
+	payload := `{"command":"rm -rf ` + root + `/tmp"}`
+
+	var output bytes.Buffer
+	err := BashPolicyEvaluateCommand(strings.NewReader(payload), &output, BashPolicyEvaluateOptions{
+		Provider:           "cursor",
+		Mode:               "on",
+		PolicyArtifactRoot: root,
+		SafeRoots:          []string{root},
+	})
+	if err != nil {
+		t.Fatalf("BashPolicyEvaluateCommand failed: %v", err)
+	}
+
+	var hookOutput map[string]any
+	if err := json.Unmarshal(output.Bytes(), &hookOutput); err != nil {
+		t.Fatalf("invalid Cursor hook output: %v\n%s", err, output.String())
+	}
+	if got := hookOutput["permission"]; got != "deny" {
+		t.Fatalf("permission = %v, want deny in on mode; output=%s", got, output.String())
+	}
+}
+
+func TestBashPolicyEvaluateCommandCursorOnDeniesMalformedPolicy(t *testing.T) {
+	isolateClaudeHome(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, bashpolicy.PolicyFileName), []byte("rules: [\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	var diagnostics bytes.Buffer
+	err := BashPolicyEvaluateCommand(strings.NewReader(`{"command":"git status --short"}`), &output, BashPolicyEvaluateOptions{
+		Provider:           "cursor",
+		Mode:               "on",
+		PolicyArtifactRoot: root,
+		SafeRoots:          []string{root},
+		Diagnostics:        &diagnostics,
+	})
+	if err != nil {
+		t.Fatalf("BashPolicyEvaluateCommand failed: %v", err)
+	}
+
+	var hookOutput map[string]any
+	if err := json.Unmarshal(output.Bytes(), &hookOutput); err != nil {
+		t.Fatalf("invalid Cursor hook output: %v\n%s", err, output.String())
+	}
+	if got := hookOutput["permission"]; got != "deny" {
+		t.Fatalf("permission = %v, want deny for on mode setup failure; output=%s", got, output.String())
+	}
+	if !strings.Contains(output.String(), "could not load policy artifacts") {
+		t.Fatalf("output missing setup failure message:\n%s", output.String())
+	}
+	if !strings.Contains(diagnostics.String(), "parse bash policy") {
+		t.Fatalf("diagnostics missing policy parse failure:\n%s", diagnostics.String())
+	}
+}
+
+func TestBashPolicyEvaluateCommandCursorOnDeniesMissingPolicyRoot(t *testing.T) {
+	isolateClaudeHome(t)
+	t.Setenv("BASH_POLICY_ARTIFACT_ROOT", "")
+
+	var output bytes.Buffer
+	var diagnostics bytes.Buffer
+	err := BashPolicyEvaluateCommand(strings.NewReader(`{"command":"git status --short"}`), &output, BashPolicyEvaluateOptions{
+		Provider:    "cursor",
+		Mode:        "on",
+		Diagnostics: &diagnostics,
+	})
+	if err != nil {
+		t.Fatalf("BashPolicyEvaluateCommand failed: %v", err)
+	}
+
+	var hookOutput map[string]any
+	if err := json.Unmarshal(output.Bytes(), &hookOutput); err != nil {
+		t.Fatalf("invalid Cursor hook output: %v\n%s", err, output.String())
+	}
+	if got := hookOutput["permission"]; got != "deny" {
+		t.Fatalf("permission = %v, want deny for on mode setup failure; output=%s", got, output.String())
+	}
+	if !strings.Contains(output.String(), "could not load policy artifacts") {
+		t.Fatalf("output missing setup failure message:\n%s", output.String())
+	}
+	if !strings.Contains(diagnostics.String(), "policy-artifact-root is required") {
+		t.Fatalf("diagnostics missing setup failure:\n%s", diagnostics.String())
+	}
+}
+
 func TestBashPolicyEvaluateCommandLoadsClaudeAllowPermissionsFromPolicyRootSettings(t *testing.T) {
 	isolateClaudeHome(t)
 	root := t.TempDir()
@@ -340,7 +544,6 @@ func TestBashPolicyReportCommandIncludesMigrationAndRedactsSummaries(t *testing.
 
 	var output bytes.Buffer
 	err := BashPolicyReportCommand(strings.NewReader(input), &output, BashPolicyReportOptions{
-		Provider:       "claude",
 		ClaudeSettings: settingsPath,
 	})
 	if err != nil {
@@ -373,7 +576,6 @@ func TestBashPolicyReportCommandReadsDefaultArtifactLogWhenInputEmpty(t *testing
 
 	var output bytes.Buffer
 	err := BashPolicyReportCommand(strings.NewReader(""), &output, BashPolicyReportOptions{
-		Provider:           "claude",
 		PolicyArtifactRoot: policyRoot,
 	})
 	if err != nil {
@@ -487,21 +689,61 @@ func TestBashPolicyExportCommandWritesFilteredCandidatesAndIgnores(t *testing.T)
 	}
 }
 
+func TestBashPolicyInitCommandInstallsCursorProviderOnly(t *testing.T) {
+	projectRoot := t.TempDir()
+	initGitRepo(t, projectRoot)
+
+	var output bytes.Buffer
+	if err := BashPolicyInitCommand(&output, projectRoot, BashPolicyInitOptions{
+		Provider:           "cursor",
+		PolicyArtifactRoot: projectRoot,
+		Command:            "/usr/local/bin/bash-policy",
+	}); err != nil {
+		t.Fatalf("BashPolicyInitCommand failed: %v", err)
+	}
+
+	cursorHooks, err := os.ReadFile(filepath.Join(projectRoot, ".cursor", "hooks.json"))
+	if err != nil {
+		t.Fatalf("Cursor hooks not installed: %v", err)
+	}
+	text := string(cursorHooks)
+	for _, want := range []string{"--provider cursor", "--mode dry-run"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Cursor hooks missing %q:\n%s", want, text)
+		}
+	}
+	for _, unexpectedPath := range []string{
+		filepath.Join(projectRoot, ".claude", "settings.json"),
+		filepath.Join(projectRoot, ".codex", "hooks.json"),
+	} {
+		if _, err := os.Stat(unexpectedPath); !os.IsNotExist(err) {
+			t.Fatalf("%s state = %v, want absent for Cursor-only init", unexpectedPath, err)
+		}
+	}
+}
+
 func TestBashPolicyActivationCommandUpdatesProviderHooks(t *testing.T) {
 	projectRoot := t.TempDir()
 	initGitRepo(t, projectRoot)
 	claudeSettings := filepath.Join(projectRoot, ".claude", "settings.json")
 	codexHooks := filepath.Join(projectRoot, ".codex", "hooks.json")
+	cursorHooks := filepath.Join(projectRoot, ".cursor", "hooks.json")
 	if err := os.MkdirAll(filepath.Dir(claudeSettings), 0755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Dir(codexHooks), 0755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Dir(cursorHooks), 0755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(claudeSettings, []byte(`{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/bash-policy.sh\" claude dry-run"}]}]}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(codexHooks, []byte(`{"hooks":{"PreToolUse":[{"matcher":"^Bash$","hooks":[{"command":".codex/hooks/bash-policy.sh codex dry-run"}]}]}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cursorHooks, []byte(`{"version":1,"hooks":{"beforeShellExecution":[{"command":"/opt/wrapper evaluate --provider cursor --mode dry-run --policy-artifact-root /old --safe-root \"$PWD\"","failClosed":true}]}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -514,7 +756,7 @@ func TestBashPolicyActivationCommandUpdatesProviderHooks(t *testing.T) {
 		t.Fatalf("BashPolicyActivationCommand failed: %v", err)
 	}
 
-	for _, path := range []string{claudeSettings, codexHooks} {
+	for _, path := range []string{claudeSettings, codexHooks, cursorHooks} {
 		content, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -528,6 +770,9 @@ func TestBashPolicyActivationCommandUpdatesProviderHooks(t *testing.T) {
 		}
 		if path == codexHooks && (!strings.Contains(text, "bash-policy.sh") || !strings.Contains(text, "codex off")) {
 			t.Fatalf("Codex hooks did not preserve wrapper command with off activation:\n%s", text)
+		}
+		if path == cursorHooks && (!strings.Contains(text, "/opt/wrapper evaluate") || !strings.Contains(text, "--provider cursor") || !strings.Contains(text, "--mode off")) {
+			t.Fatalf("Cursor hooks did not preserve wrapper command with off activation:\n%s", text)
 		}
 	}
 }
@@ -563,6 +808,42 @@ func TestBashPolicyActivationCommandPreservesRenamedEvaluateCommand(t *testing.T
 	}
 	if strings.Contains(text, "/usr/local/bin/bash-policy evaluate") {
 		t.Fatalf("activation should preserve existing command unless command override is explicit:\n%s", text)
+	}
+}
+
+func TestBashPolicyActivationCommandPrunesLegacyCursorHookWithoutNullEvent(t *testing.T) {
+	projectRoot := t.TempDir()
+	initGitRepo(t, projectRoot)
+	cursorHooks := filepath.Join(projectRoot, ".cursor", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(cursorHooks), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cursorHooks, []byte(`{"version":1,"hooks":{"afterShellExecution":[{"command":"bash .cursor/hooks/cursor-bash-policy.sh","failClosed":true}]}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := BashPolicyActivationCommand(&output, projectRoot, BashPolicyActivationOptions{
+		Provider:   "cursor",
+		Activation: "dry-run",
+		Command:    "/usr/local/bin/bash-policy",
+	}); err != nil {
+		t.Fatalf("BashPolicyActivationCommand failed: %v", err)
+	}
+
+	content, err := os.ReadFile(cursorHooks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	if strings.Contains(text, "cursor-bash-policy.sh") {
+		t.Fatalf("legacy Cursor wrapper should be pruned:\n%s", text)
+	}
+	if strings.Contains(text, `"afterShellExecution": null`) {
+		t.Fatalf("legacy-only event should serialize as empty array, not null:\n%s", text)
+	}
+	if !strings.Contains(text, `"afterShellExecution": []`) {
+		t.Fatalf("legacy-only event should remain a clean empty array:\n%s", text)
 	}
 }
 
@@ -657,7 +938,7 @@ func TestBashPolicyActivationCommandRejectsUnknownProvider(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unknown provider to fail")
 	}
-	if !strings.Contains(err.Error(), "claude, codex, or all") {
+	if !strings.Contains(err.Error(), "claude, codex, cursor, or all") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -2,12 +2,13 @@
 
 ## Provider Hooks
 
-`bash-policy` installs project-local provider hooks for Claude Code and Codex.
+`bash-policy` installs project-local provider hooks for Claude Code, Codex, and Cursor.
 The hook command calls the standalone binary directly:
 
 ```bash
 bash-policy evaluate --provider claude --mode dry-run --policy-artifact-root /abs/project --safe-root "$CLAUDE_PROJECT_DIR"
 bash-policy evaluate --provider codex --mode dry-run --policy-artifact-root /abs/project --safe-root "$PWD"
+bash-policy evaluate --provider cursor --mode dry-run --policy-artifact-root /abs/project --safe-root "$PWD"
 ```
 
 Use `bash-policy init` from a project checkout to install or repair hook
@@ -16,6 +17,7 @@ configuration:
 ```bash
 bash-policy init --provider claude
 bash-policy init --provider codex
+bash-policy init --provider cursor
 bash-policy init --provider all
 ```
 
@@ -43,6 +45,9 @@ runtime allow rules.
 | `bash-policy init --provider claude` | Writes or merges the Claude PreToolUse Bash hook. |
 | `bash-policy activation ... --provider claude` | Updates the installed hook activation. |
 | `bash-policy evaluate --provider claude` | Reads user-global and repo-local Claude settings. `permissions.deny` entries are deny inputs; admissible `permissions.allow` entries are runtime allow entries for parsed command units. Built-ins, `.bash-policy.yaml`, safe roots, concrete command-shape checks, repo-local precedence, and activation mode still apply. |
+| `bash-policy init --provider cursor` | Writes or merges the Cursor `beforeShellExecution` Bash hook in dry-run mode. |
+| `bash-policy activation ... --provider cursor` | Updates the installed Cursor hook activation. |
+| `bash-policy evaluate --provider cursor` | Reads Claude settings as policy inputs, then emits Cursor hook allow/deny output. `off` and `dry-run` allow shell execution; `on` denies non-allow decisions or policy setup failures. |
 | `bash-policy evaluate --provider codex` | Does not read Claude settings; runtime decisions come from built-ins, `.bash-policy.yaml`, safe roots, and the requested activation mode. |
 | `bash-policy validate` | Reads `.bash-policy.yaml` and reports schema errors before activation or export workflows rely on it. |
 | `bash-policy report --claude-settings .claude/settings.json` | Reads current `Bash(...)` permissions so reports can list broad Claude permission families to migrate. |
@@ -80,7 +85,7 @@ exists, pass `--policy-artifact-root` explicitly.
 3. Review observed decisions:
 
    ```bash
-   bash-policy report --provider claude --policy-artifact-root /abs/project --claude-settings .claude/settings.json
+   bash-policy report --policy-artifact-root /abs/project --claude-settings .claude/settings.json
    ```
 
    The report is for triage; it does not write policy.
@@ -159,6 +164,7 @@ exists, pass `--policy-artifact-root` explicitly.
    bash-policy activation dry-run --provider all
    bash-policy activation on --provider claude
    bash-policy activation off --provider codex
+   bash-policy activation on --provider cursor
    ```
 
 `dry-run` records diagnostics and does not change provider behavior. `on` lets a

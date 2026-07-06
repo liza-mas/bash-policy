@@ -24,6 +24,17 @@ func TestParseHookCommandAcceptsStandaloneCodexShape(t *testing.T) {
 	}
 }
 
+func TestParseHookCommandAcceptsStandaloneCursorShape(t *testing.T) {
+	info, ok := ParseHookCommand(`/opt/wrapper evaluate --provider cursor --mode dry-run --policy-artifact-root /project --safe-root "$PWD"`)
+
+	if !ok {
+		t.Fatal("expected Cursor standalone hook command to parse")
+	}
+	if info.Provider != "cursor" || info.Activation != ActivationDryRun || info.PolicyArtifactRoot != "/project" || info.SafeRoot != "$PWD" || info.Legacy {
+		t.Fatalf("unexpected Cursor hook command info: %+v", info)
+	}
+}
+
 func TestParseHookCommandRejectsGenericEvaluateProviderCommand(t *testing.T) {
 	if _, ok := ParseHookCommand(`/opt/tool evaluate --provider claude --mode dry-run`); ok {
 		t.Fatal("generic evaluate provider command should not parse as a bash-policy hook")

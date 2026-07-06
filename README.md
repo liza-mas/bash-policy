@@ -5,8 +5,8 @@ coarse for real agent workflows. Claude can only configure broad command-family
 allow rules, while day-to-day agents mostly run compound shell commands that
 either defeat those settings or force unsafe `Bash(*)`-style permissions.
 
-The same policy layer also supports Codex, where the immediate value is
-auditability: capture what Bash commands agents actually run, review them as
+The same policy layer also supports Codex and Cursor, where the immediate value
+is auditability: capture what Bash commands agents actually run, review them as
 normalized command shapes, and tighten policy when provider enforcement is
 available.
 
@@ -27,12 +27,12 @@ The executable exposes the standalone Bash policy workflow:
 ```text
 bash-policy --help
 bash-policy --version
-bash-policy init --provider claude|codex|all [--command COMMAND]
-bash-policy evaluate --provider claude|codex --mode on|dry-run|off
-bash-policy activation on|dry-run|off --provider claude|codex|all [--command COMMAND]
+bash-policy init --provider claude|codex|cursor|all [--command COMMAND]
+bash-policy evaluate --provider claude|codex|cursor --mode on|dry-run|off
+bash-policy activation on|dry-run|off --provider claude|codex|cursor|all [--command COMMAND]
 bash-policy validate [--policy-artifact-root DIR]
 bash-policy report
-bash-policy export
+bash-policy export --provider claude|codex|cursor
 bash-policy codex-readiness
 ```
 

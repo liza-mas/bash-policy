@@ -191,6 +191,123 @@ func TestWriteCodexProjectHooksExcludesBashPolicyArtifacts(t *testing.T) {
 	assertBashPolicyArtifactsExcluded(t, projectRoot)
 }
 
+func TestWriteCursorProjectHooksInstallsOnlyBashPolicyAssets(t *testing.T) {
+	projectRoot := t.TempDir()
+
+	if err := WriteCursorProjectHooks(projectRoot, projectRoot, "/usr/local/bin/bash-policy", bufio.NewReader(strings.NewReader(""))); err != nil {
+		t.Fatalf("WriteCursorProjectHooks failed: %v", err)
+	}
+
+	hooksContent, err := os.ReadFile(filepath.Join(projectRoot, ".cursor", "hooks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hooks map[string]any
+	if err := json.Unmarshal(hooksContent, &hooks); err != nil {
+		t.Fatalf("hooks JSON is invalid: %v\n%s", err, string(hooksContent))
+	}
+	text := string(hooksContent)
+	for _, want := range []string{"beforeShellExecution", "bash-policy evaluate", "--provider cursor", "--mode dry-run", `"failClosed": true`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Cursor hooks JSON missing %q:\n%s", want, text)
+		}
+	}
+	assertOnlyBashPolicyCommands(t, hooks)
+}
+
+func TestWriteCursorProjectHooksMergesExistingHooksAndMigratesLegacyWrapper(t *testing.T) {
+	projectRoot := t.TempDir()
+	cursorDir := filepath.Join(projectRoot, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existingHooks := `{"version":1,"hooks":{"beforeShellExecution":[{"command":"./hooks/allow.sh"},{"command":"bash .cursor/hooks/cursor-bash-policy.sh","failClosed":true}],"afterShellExecution":[{"command":"./hooks/cleanup.sh"}]}}`
+	if err := os.WriteFile(filepath.Join(cursorDir, "hooks.json"), []byte(existingHooks), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteCursorProjectHooks(projectRoot, projectRoot, "/usr/local/bin/bash-policy", bufio.NewReader(strings.NewReader("y\n"))); err != nil {
+		t.Fatalf("WriteCursorProjectHooks failed: %v", err)
+	}
+
+	hooksContent, err := os.ReadFile(filepath.Join(cursorDir, "hooks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(hooksContent)
+	for _, want := range []string{"./hooks/allow.sh", "./hooks/cleanup.sh", "--provider cursor", "--mode dry-run"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("merged Cursor hooks JSON missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "cursor-bash-policy.sh") {
+		t.Fatalf("legacy Cursor wrapper should be replaced by direct bash-policy hook:\n%s", text)
+	}
+}
+
+func TestWriteCursorProjectHooksPreservesExistingActivation(t *testing.T) {
+	projectRoot := t.TempDir()
+	cursorDir := filepath.Join(projectRoot, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existingHooks := `{"version":1,"hooks":{"beforeShellExecution":[{"command":"/opt/wrapper evaluate --provider cursor --mode on --policy-artifact-root /project --safe-root \"$PWD\"","failClosed":true}]}}`
+	if err := os.WriteFile(filepath.Join(cursorDir, "hooks.json"), []byte(existingHooks), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteCursorProjectHooks(projectRoot, projectRoot, "/usr/local/bin/bash-policy", bufio.NewReader(strings.NewReader("y\n"))); err != nil {
+		t.Fatalf("WriteCursorProjectHooks failed: %v", err)
+	}
+
+	hooksContent, err := os.ReadFile(filepath.Join(cursorDir, "hooks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(hooksContent)
+	if !strings.Contains(text, "/usr/local/bin/bash-policy evaluate") || !strings.Contains(text, "--provider cursor") || !strings.Contains(text, "--mode on") {
+		t.Fatalf("existing Cursor activation should be preserved on managed command:\n%s", text)
+	}
+	if strings.Contains(text, "/opt/wrapper") {
+		t.Fatalf("renamed Cursor command should be migrated to managed command:\n%s", text)
+	}
+}
+
+func TestWriteCursorProjectHooksDeclineLeavesFileUntouched(t *testing.T) {
+	projectRoot := t.TempDir()
+	cursorDir := filepath.Join(projectRoot, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	originalHooks := `{"version":1,"hooks":{}}`
+	if err := os.WriteFile(filepath.Join(cursorDir, "hooks.json"), []byte(originalHooks), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteCursorProjectHooks(projectRoot, projectRoot, "/usr/local/bin/bash-policy", bufio.NewReader(strings.NewReader("n\n"))); err != nil {
+		t.Fatalf("WriteCursorProjectHooks failed: %v", err)
+	}
+
+	hooksContent, err := os.ReadFile(filepath.Join(cursorDir, "hooks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(hooksContent) != originalHooks {
+		t.Fatalf("Cursor hooks changed despite declined merge:\n%s", string(hooksContent))
+	}
+}
+
+func TestWriteCursorProjectHooksExcludesBashPolicyArtifacts(t *testing.T) {
+	projectRoot := t.TempDir()
+	initGitRepoForEmbeddedTest(t, projectRoot)
+
+	if err := WriteCursorProjectHooks(projectRoot, projectRoot, "/usr/local/bin/bash-policy", bufio.NewReader(strings.NewReader(""))); err != nil {
+		t.Fatalf("WriteCursorProjectHooks failed: %v", err)
+	}
+
+	assertBashPolicyArtifactsExcluded(t, projectRoot)
+}
+
 func TestMergeSettingsDeduplicatesBashPolicyHookActivation(t *testing.T) {
 	managed := map[string]any{
 		"hooks": map[string]any{

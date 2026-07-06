@@ -6,21 +6,23 @@ Status: draft
 
 Create a standalone provider-aware `bash-policy` CLI that reduces Claude
 headless permission stalls for provably safe commands and hardens vanilla Claude
-Code and Codex projects against unsafe shell, git, RTK, and secret-exposure
-command shapes.
+Code, Codex, and Cursor projects against unsafe shell, git, RTK, and
+secret-exposure command shapes.
 
 ## Context
 
-Claude Code and Codex users commonly compensate for provider-specific Bash
+Claude Code, Codex, and Cursor users commonly compensate for provider-specific Bash
 permission behavior with prompt guidance, broad Claude Bash permissions, and
 ad hoc deny guards. This works operationally, but it makes prompts carry policy
 that belongs in runtime enforcement and still leaves unattended agents
 vulnerable to repeated permission blocks or unsafe command forms.
 
-Claude and Codex need different outcomes from the same policy engine. Claude
-benefits from emitting `allow` for safe commands so headless agents do not stall
-on permission prompts. Codex does not have the same approval-loop failure mode;
-its benefit is deny/log hardening inside the workspace sandbox.
+Claude, Codex, and Cursor need different outcomes from the same policy engine.
+Claude benefits from emitting `allow` for safe commands so headless agents do not
+stall on permission prompts. Codex does not have the same approval-loop failure
+mode; its benefit is deny/log hardening inside the workspace sandbox. Cursor
+uses project-local shell hooks where dry-run must allow execution while recording
+policy decisions, and `on` may deny non-allow decisions.
 
 The CLI must install and operate in ordinary project checkouts without depending
 on a host agent framework. Provider hook trust, hook merge behavior, and
@@ -117,15 +119,17 @@ permissions.
 
 ### Standalone CLI Surface
 
-- `bash-policy init --provider claude|codex|all`: install or repair project-local
-  provider hook configuration for vanilla Claude Code and Codex without changing
-  an existing activation choice. Options include `--policy-artifact-root` and
-  `--command` for overriding the generated hook executable path.
-- `bash-policy evaluate --provider claude|codex --mode on|dry-run|off`: evaluate
-  one provider Bash hook payload from stdin, append redacted telemetry when
-  enabled, and emit provider-specific hook output only when verified. Provider
-  hooks must pass `--policy-artifact-root` and at least one `--safe-root`.
-- `bash-policy activation on|dry-run|off --provider claude|codex|all`: update
+- `bash-policy init --provider claude|codex|cursor|all`: install or repair
+  project-local provider hook configuration for vanilla Claude Code, Codex, and
+  Cursor without changing an existing activation choice. Options include
+  `--policy-artifact-root` and `--command` for overriding the generated hook
+  executable path.
+- `bash-policy evaluate --provider claude|codex|cursor --mode on|dry-run|off`:
+  evaluate one provider Bash hook payload from stdin, append redacted telemetry
+  when enabled, and emit provider-specific hook output only when verified.
+  Provider hooks must pass `--policy-artifact-root` and at least one
+  `--safe-root`.
+- `bash-policy activation on|dry-run|off --provider claude|codex|cursor|all`: update
   installed hook activation while preserving unrelated provider settings. Options
   include `--policy-artifact-root` and `--command` for explicitly replacing the
   installed hook command; otherwise activation changes preserve the existing
@@ -135,8 +139,8 @@ permissions.
   `--policy-artifact-root` for explicit roots.
 - `bash-policy report`: build a redacted aggregate report from dry-run JSONL
   evidence, defaulting to `[POLICY_ARTIFACT_ROOT]/.bash-policy-dry-run.jsonl`
-  when stdin is empty. Options include `--provider`, `--policy-artifact-root`,
-  and `--claude-settings`.
+  when stdin is empty. Options include `--policy-artifact-root` and
+  `--claude-settings`.
 - `bash-policy export`: regenerate unresolved candidate policy entries from
   dry-run evidence and optional Claude settings input. Options include
   `--provider`, `--policy-artifact-root`, and `--claude-settings`.
@@ -205,7 +209,7 @@ explicitly.
   but existing `on`, `dry-run`, or `off` activation choices are user intent.
 - NFR-000-10: Dry-run event logging must be safe when multiple agents append
   concurrently. Log writes must not interleave, truncate, or corrupt JSONL
-  records under concurrent Claude and Codex hook executions.
+  records under concurrent Claude, Codex, and Cursor hook executions.
 - NFR-000-11: Bash policy artifacts under `policy-artifact-root` must have
   explicit lifecycle disposition. `.bash-policy.yaml` is the curated project
   policy and may be tracked. `.bash-policy-dry-run.jsonl` and
@@ -251,9 +255,9 @@ explicitly.
   `git -C <safe-dir> <read-only>` forms should be eligible for approval once
   parsed and path-validated. Confidence: HIGH.
 - ASM-000-4: The implementation should provide a standalone `bash-policy` binary
-  because vanilla Claude Code and Codex hooks need an installable command that
-  does not depend on a host agent framework. Confidence: HIGH.
-- ASM-000-5: Claude and Codex should share one provider-tagged rollout event
+  because vanilla Claude Code, Codex, and Cursor hooks need an installable command
+  that does not depend on a host agent framework. Confidence: HIGH.
+- ASM-000-5: Claude, Codex, and Cursor should share one provider-tagged rollout event
   log rather than maintain separate provider-specific files. Confidence: HIGH.
 
 ### Open Questions
@@ -325,23 +329,24 @@ explicitly.
   The durable default log path is
   `[POLICY_ARTIFACT_ROOT]/.bash-policy-dry-run.jsonl`.
   Each line must identify the provider and activation state so a shared log can
-  be filtered by Claude, Codex, or combined rollout behavior. Appends must use a
-  cross-process lock or equivalent atomic append mechanism so concurrent agents
-  produce complete, independently parseable JSONL records.
+  be filtered by Claude, Codex, Cursor, or combined rollout behavior. Appends
+  must use a cross-process lock or equivalent atomic append mechanism so
+  concurrent agents produce complete, independently parseable JSONL records.
 - DN-006: Provider hook wrapper arguments must use the same activation
-  vocabulary as `bash-policy activation on|dry-run|off`. Generated Claude and
-  Codex hook configuration must not introduce separate non-activation wrapper
-  modes. The target state has no `audit` wrapper mode; implementation references
-  to `audit` must be renamed or removed rather than normalized into a second
-  public spelling.
+  vocabulary as `bash-policy activation on|dry-run|off`. Generated Claude,
+  Codex, and Cursor hook configuration must not introduce separate
+  non-activation wrapper modes. The target state has no `audit` wrapper mode;
+  implementation references to `audit` must be renamed or removed rather than
+  normalized into a second public spelling.
 - DN-007: Hard-coded command profiles are bootstrap defaults, not the source of
   truth once a project policy configuration exists. Rule precedence is:
   non-overridable safety floor, effective Claude `permissions.deny` entries for
-  Claude provider evaluation, configured project rules, admissible Claude
-  `permissions.allow` entries for Claude provider evaluation, and built-in
-  defaults. Effective Claude settings combine `~/.claude/settings.json` with
-  `[POLICY_ARTIFACT_ROOT]/.claude/settings.json`; repo-local entries prevail over
-  exact normalized conflicts with user-global entries.
+  Claude and Cursor provider evaluation, configured project rules, admissible
+  Claude `permissions.allow` entries for Claude and Cursor provider evaluation,
+  and built-in defaults. Effective Claude settings combine
+  `~/.claude/settings.json` with `[POLICY_ARTIFACT_ROOT]/.claude/settings.json`;
+  repo-local entries prevail over exact normalized conflicts with user-global
+  entries.
   The built-in default catalog should include read-only command families commonly
   granted in Claude settings when the safety floor and
   profile-specific argument constraints can reject hazardous targets, flags,
@@ -424,11 +429,11 @@ explicitly.
 
 ### Activation State Mapping
 
-| Activation | Claude behavior | Codex behavior |
-|---|---|---|
-| `off` | Do not evaluate or emit provider decisions. Preserve this state across `bash-policy init`. | Do not evaluate or emit provider decisions. Preserve this state across `bash-policy init`. |
-| `dry-run` | Evaluate and append redacted events to `[POLICY_ARTIFACT_ROOT]/.bash-policy-dry-run.jsonl`; emit no Claude permission decision. | Evaluate and append redacted events to `[POLICY_ARTIFACT_ROOT]/.bash-policy-dry-run.jsonl`; emit no Codex blocking claim. |
-| `on` | Emit verified hard-deny output for built-in hard-deny predicates, emit `allow` only where the policy and verified Claude adapter contract permit it, and still append redacted events. If hard-deny output is not verified, report degraded hardening and emit no block claim. | Remain log-only unless Codex hook blocking or another Codex-supported blocking surface is verified. |
+| Activation | Claude behavior | Codex behavior | Cursor behavior |
+|---|---|---|---|
+| `off` | Do not evaluate or emit provider decisions. Preserve this state across `bash-policy init`. | Do not evaluate or emit provider decisions. Preserve this state across `bash-policy init`. | Do not evaluate. Emit explicit Cursor `allow` so the installed fail-closed hook stays inactive. Preserve this state across `bash-policy init`. |
+| `dry-run` | Evaluate and append redacted events to `[POLICY_ARTIFACT_ROOT]/.bash-policy-dry-run.jsonl`; emit no Claude permission decision. | Evaluate and append redacted events to `[POLICY_ARTIFACT_ROOT]/.bash-policy-dry-run.jsonl`; emit no Codex blocking claim. | Evaluate and append redacted events to `[POLICY_ARTIFACT_ROOT]/.bash-policy-dry-run.jsonl`; emit explicit Cursor `allow`, including when setup is incomplete. |
+| `on` | Emit verified hard-deny output for built-in hard-deny predicates, emit `allow` only where the policy and verified Claude adapter contract permit it, and still append redacted events. If hard-deny output is not verified, report degraded hardening and emit no block claim. | Remain log-only unless Codex hook blocking or another Codex-supported blocking surface is verified. | Emit Cursor `allow` for `allow` and `no-op`; emit Cursor `deny` for `deny`, `manual`, or policy setup failures. |
 
 Codex's log-only ceiling is a provider capability limit, not an activation state;
 it can still apply while activation is `on` until a blocking contract is
@@ -446,12 +451,12 @@ verified.
 
 ### Provider Decision Mapping
 
-| Decision | Claude adapter | Codex adapter |
-|---|---|---|
-| `allow` | Emit `allow` only after deny predicates pass and hook semantics are verified. | No-op; Codex does not need approval unblocking. |
-| `deny` | Emit a verified Claude hard-deny response, or invoke a generated companion hard-deny hook, for built-in hard-deny predicates; if no deny contract is verified, emit no `allow` and report degraded hardening instead of claiming block behavior. | Deny only after hook trust/output contract is verified, otherwise use rules/execpolicy or log-only behavior. |
-| `manual` | No-op; native permission flow decides. | Log-only unless mapped to a verified Codex policy surface. |
-| `no-op` | No-op. | No-op. |
+| Decision | Claude adapter | Codex adapter | Cursor adapter |
+|---|---|---|---|
+| `allow` | Emit `allow` only after deny predicates pass and hook semantics are verified. | No-op; Codex does not need approval unblocking. | Emit Cursor `allow`. |
+| `deny` | Emit a verified Claude hard-deny response, or invoke a generated companion hard-deny hook, for built-in hard-deny predicates; if no deny contract is verified, emit no `allow` and report degraded hardening instead of claiming block behavior. | Deny only after hook trust/output contract is verified, otherwise use rules/execpolicy or log-only behavior. | Emit Cursor `deny` in `on`; emit Cursor `allow` in `dry-run`. |
+| `manual` | No-op; native permission flow decides. | Log-only unless mapped to a verified Codex policy surface. | Emit Cursor `deny` in `on` until a verified Cursor ask/prompt path exists; emit Cursor `allow` in `dry-run`. |
+| `no-op` | No-op. | No-op. | Emit Cursor `allow`. |
 
 ---
 
@@ -778,8 +783,9 @@ verified.
   `[POLICY_ARTIFACT_ROOT]/.bash-policy-dry-run.jsonl` by default when no stdin is
   supplied.
 - FR-004-8: The dry-run report must aggregate repeated command-shape events with
-  counts rather than dropping frequency evidence as duplicates. Reports may
-  filter by provider, but the underlying event log remains shared.
+  counts rather than dropping frequency evidence as duplicates. Reports are
+  aggregate over the selected input evidence; the underlying event log remains
+  shared and provider-tagged for export and future analysis.
 - FR-004-9: `bash-policy export` must build
   `[POLICY_ARTIFACT_ROOT]/.bash-policy-candidates.yaml` from candidate sources.
   Supported sources must include aggregated dry-run events and an explicit Claude
@@ -958,14 +964,16 @@ verified.
 - FR-005-3: The implementation must expose a dry-run report that summarizes
   policy outcomes without leaking command secrets.
 - FR-005-4: Tests must verify provider-specific hook behavior: Claude allow
-  output cannot override hard-deny predicates, and Codex hard-deny behavior is
-  only claimed when hook trust/output or rules/execpolicy blocking is verified.
+  output cannot override hard-deny predicates, Cursor dry-run output does not
+  block execution, Cursor `on` output denies non-allow decisions, and Codex
+  hard-deny behavior is only claimed when hook trust/output or rules/execpolicy
+  blocking is verified.
 - FR-005-5: Tests must verify durable dry-run event persistence, including
   provider and activation fields, redaction, and append behavior.
-- FR-005-6: Tests must verify Bash policy activation upsert behavior for Claude
-  and Codex settings, including preserving existing activation across
+- FR-005-6: Tests must verify Bash policy activation upsert behavior for Claude,
+  Codex, and Cursor settings, including preserving existing activation across
   `bash-policy init` merge flows.
-- FR-005-7: Tests must verify generated Claude and Codex hook commands use
+- FR-005-7: Tests must verify generated Claude, Codex, and Cursor hook commands use
   `on|dry-run|off` activation vocabulary and do not emit non-activation wrapper
   modes.
 - FR-005-8: Tests must verify concurrent dry-run event writes from multiple

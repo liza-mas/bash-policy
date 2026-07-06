@@ -129,7 +129,7 @@ func hookValueSpellings(value string) []string {
 }
 
 func isHookProvider(value string) bool {
-	return value == "claude" || value == "codex"
+	return value == "claude" || value == "codex" || value == "cursor"
 }
 
 func isHookActivation(value string) bool {
