@@ -882,6 +882,29 @@ func TestEvaluateRejectsBroadClaudeAllowPermissionsAsRuntimeAllowSource(t *testi
 	}
 }
 
+func TestEvaluateAllowsAgentCLIFamiliesFromClaudeAllowPermissions(t *testing.T) {
+	root := t.TempDir()
+	for _, tt := range []struct {
+		name       string
+		command    string
+		permission string
+	}{
+		{name: "omni-ee family", command: "omni-ee claim-review --agent-id coder-1", permission: "Bash(omni-ee:*)"},
+		{name: "liza family", command: "liza status", permission: "Bash(liza:*)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			result := Evaluate(Request{
+				Command:                tt.command,
+				ProjectRoot:            root,
+				ClaudeAllowPermissions: []string{tt.permission},
+			})
+			if result.Decision != DecisionAllow {
+				t.Fatalf("decision = %s, want allow for %s; result=%+v", result.Decision, tt.permission, result)
+			}
+		})
+	}
+}
+
 func TestEvaluateRequiresFullRuntimeShapeForClaudeAllowPermissions(t *testing.T) {
 	root := t.TempDir()
 	for _, tt := range []struct {

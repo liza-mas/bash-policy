@@ -212,7 +212,8 @@ func claudeAllowPermissionPrefixSupported(fields []string) bool {
 	if BuiltInCoversCommandShape(strings.Join(fields, " ")) {
 		return true
 	}
-	return claudeAllowGHPRViewPrefix(fields) || (fields[0] == "grep" && len(fields) > 1)
+	return claudeAllowGHPRViewPrefix(fields) || (fields[0] == "grep" && len(fields) > 1) ||
+		claudeAllowAgentCLIFamily(fields)
 }
 
 func claudeAllowCommandShapeSupported(fields []string) bool {
@@ -222,7 +223,8 @@ func claudeAllowCommandShapeSupported(fields []string) bool {
 	if BuiltInCoversCommandShape(strings.Join(fields, " ")) {
 		return true
 	}
-	return claudeAllowGHPRViewShape(fields) || claudeAllowGrepCommandShape(fields)
+	return claudeAllowGHPRViewShape(fields) || claudeAllowGrepCommandShape(fields) ||
+		claudeAllowAgentCLIFamily(fields)
 }
 
 func claudeAllowGHPRViewPrefix(fields []string) bool {
@@ -235,4 +237,13 @@ func claudeAllowGHPRViewShape(fields []string) bool {
 
 func claudeAllowGrepCommandShape(fields []string) bool {
 	return len(fields) > 1 && fields[0] == "grep"
+}
+
+// claudeAllowAgentCLIFamily treats the liza and omni-ee agent CLIs as an
+// intentional exception to the "broad allow families are migration inventory,
+// not runtime allow rules" default: a Bash(liza:*) or Bash(omni-ee:*) permission
+// authorizes the whole family at runtime, subject to the safety floor, deny
+// permissions, and sensitive-argument checks that run before this point.
+func claudeAllowAgentCLIFamily(fields []string) bool {
+	return len(fields) > 0 && (fields[0] == "liza" || fields[0] == "omni-ee")
 }

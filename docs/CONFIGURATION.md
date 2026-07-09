@@ -38,7 +38,10 @@ settings. `permissions.deny` entries are deny inputs; admissible
 `permissions.allow` entries are runtime leaf allow sources only after the
 non-overridable safety floor and concrete command-shape checks have accepted the
 parsed command unit. Broad allow families remain migration inventory, not direct
-runtime allow rules.
+runtime allow rules, except the `liza` and `omni-ee` agent CLIs: a
+`Bash(liza:*)` or `Bash(omni-ee:*)` entry authorizes the whole family at
+runtime, still subject to the safety floor, `permissions.deny`, and
+sensitive-argument checks.
 
 | Command | How `.claude/settings.json` is used |
 |---------|-------------------------------------|
